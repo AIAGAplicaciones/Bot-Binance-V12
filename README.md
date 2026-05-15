@@ -1,71 +1,142 @@
 # Bot Binance 12
 
-Bot de trading para Binance Spot. **Filosofía: validar antes de operar.**
+Bot de **DCA constante** para Binance Spot, desplegado en Railway.
 
-## Estado del proyecto
+> ⚠️ La validación con backtest descartó el trading activo (5 estrategias TA-based, todas con esperanza negativa). Lo que se despliega aquí es un **acumulador**: compra €X de un activo cada semana, sin señales de timing.
 
-🚧 Fase 1 de 5 — Skeleton + descarga de datos. Sin lógica live todavía.
+## Estado
 
-## Roadmap
+✅ Fase 1-3 — backtest validado (no funciona ninguna TA simple sobre ETH/EUR).
+✅ Fase 4 — DCA constante desplegable.
+🚧 Fase 5 — dashboard web (pendiente).
 
-| Fase | Qué se construye | Estado |
-|------|------------------|--------|
-| 1 | Skeleton + descarga de OHLCV histórico de Binance | en curso |
-| 2 | Motor de backtest con fees y slippage reales | pendiente |
-| 3 | Implementación + comparación de 3 estrategias candidatas | pendiente |
-| 4 | Loop live + paper trading sobre la estrategia ganadora | pendiente |
-| 5 | Dashboard + despliegue | pendiente |
+## Cómo funciona
 
-Las fases 4-5 **no se empiezan** hasta que la fase 3 produzca una estrategia con esperanza positiva neta de fees, validada en al menos 18 meses de datos.
+- Cada `check_interval_minutes` (default 30 min) el bot mira la fecha UTC actual.
+- Si es el día de la semana configurado (`buy_weekday`, default lunes UTC) y aún no ha comprado hoy:
+  - Coge el precio actual.
+  - Lanza una market buy de `weekly_eur` (default €25) sobre `symbol` (default ETH/EUR).
+  - Persiste la operación en SQLite con clave única `(buy_date_utc, symbol)`.
+- Si reinicia, no compra dos veces el mismo día (idempotencia por fecha).
+- Hard cap absoluto: `max_total_eur` (default €10 000). Si la suma histórica lo supera, deja de comprar y solo loggea.
 
-## Estrategias que vamos a comparar
-
-Ver [`STRATEGY.md`](STRATEGY.md) para detalles. Resumen:
-
-- **A — Breakout 1h con ATR**: rotura de máximos + filtro EMA200, stops dinámicos por ATR.
-- **B — Trend following diario (Donchian)**: rotura de máximos de 20 días, salida por mínimos de 10 días.
-- **C — DCA + RSI dip**: referencia de acumulación pasiva, no es trading direccional.
+**Modos**:
+- `FORCE_PAPER=true` (default): simula compras, no llama a Binance trading API.
+- `FORCE_PAPER=false` + keys API válidas: ejecuta market buys reales.
 
 ## Setup local
 
 ```bash
-cd "Bot binance 12"
-python3.11 -m venv .venv
-source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env  # solo necesario para fase 4+
+cp .env.example .env
+# Edita .env: por defecto FORCE_PAPER=true (paper mode)
+python -m src.main
+# Abre http://localhost:8000 → {"status":"ok"}
+# http://localhost:8000/status → JSON con resumen (requiere auth básica)
 ```
 
-## Descargar datos históricos
+## Despliegue en Railway
+
+### 1. Push del repo
 
 ```bash
-python -m src.data.download --symbol ETHEUR --timeframe 1h --months 24
-python -m src.data.download --symbol ETHEUR --timeframe 1d --months 36
-python -m src.data.download --symbol BTCEUR --timeframe 1h --months 24
+git push origin main
 ```
 
-Los CSV se guardan en `data/cache/`.
+Railway detecta el `Dockerfile` y `railway.toml` y arranca un build.
+
+### 2. Variables de entorno (Railway → Variables)
+
+| Variable | Valor recomendado inicial | Cuando flipas a live |
+|---|---|---|
+| `FORCE_PAPER` | `true` | `false` |
+| `BINANCE_API_KEY` | (vacío) | tu key (solo permiso Spot Trading) |
+| `BINANCE_API_SECRET` | (vacío) | tu secret |
+| `DASHBOARD_USER` | `admin` | `admin` |
+| `DASHBOARD_PASSWORD` | password fuerte | password fuerte |
+| `DATABASE_PATH` | `/app/data/bot.db` | igual |
+| `LOG_LEVEL` | `INFO` | `INFO` |
+
+### 3. Volumen persistente (imprescindible)
+
+Railway → **+ New** → **Volume**. Mount path: `/app/data`. Asocia al servicio.
+Sin esto, cada redeploy borra el histórico de compras y el bot pierde la idempotencia.
+
+### 4. Configurar el cap
+
+Edita `config.yaml` antes de pushear (no env var):
+
+```yaml
+live:
+  symbol: "ETH/EUR"
+  weekly_eur: 25.0
+  buy_weekday: 0
+  max_total_eur: 10000.0
+```
+
+`max_total_eur` es la red de seguridad final: si por bug el bot intentara comprar más de eso en total histórico, se para. Pónselo a algo realista para tu horizonte (e.g., €25/sem × 52 sem × 5 años = €6 500).
+
+### 5. Permisos de la API key de Binance
+
+En Binance → API Management:
+- ✅ Enable Spot & Margin Trading.
+- ❌ NO marques Enable Withdrawals.
+- Restringe por IP (Railway te da una IP estática en planes de pago, o sin restricción si usas free tier).
+
+### 6. Checklist antes de quitar `FORCE_PAPER`
+
+- [ ] El bot lleva ≥1 mes corriendo en `FORCE_PAPER=true`.
+- [ ] El histórico de "compras paper" en SQLite tiene buenos timestamps (revisa `/status`).
+- [ ] La API key no tiene permiso de retirada.
+- [ ] El volumen `/app/data` está montado y persiste.
+- [ ] `max_total_eur` está puesto a un valor que estás cómodo perdiendo.
+
+## Endpoints
+
+- `GET /` — healthcheck público (Railway lo usa).
+- `GET /status` — JSON con modo, config, summary, último precio, P&L sobre coste medio. **Requiere HTTP Basic Auth**.
+
+## Backtest local
+
+Aunque el bot live es DCA constante, el repo conserva el backtester para que puedas validar nuevas ideas sin tocar producción:
+
+```bash
+# DCA comparison (constante vs RSI):
+python -m src.backtest.dca_run --symbol ETH/EUR --weekly 25
+
+# Estrategia activa S1 (5m mean reversion) — solo como referencia, perdió:
+python -m src.backtest.run --symbol ETH/EUR --timeframe 5m
+```
+
+Spec detallada de las estrategias probadas y por qué se descartaron: [`STRATEGY.md`](STRATEGY.md).
 
 ## Estructura
 
 ```
 Bot binance 12/
 ├── pyproject.toml
-├── config.yaml              # parámetros de estrategia (vivo)
-├── STRATEGY.md              # spec detallada de las 3 estrategias
+├── config.yaml              # parámetros del bot live
+├── Dockerfile
+├── railway.toml
+├── .env.example
+├── STRATEGY.md              # análisis de estrategias probadas
 ├── src/
-│   ├── data/
-│   │   └── download.py      # descarga OHLCV de Binance vía ccxt
-│   ├── indicators.py        # ATR, EMA, Donchian, RSI
-│   ├── strategy/            # (fase 3)
-│   ├── backtest/            # (fase 2)
-│   └── live/                # (fase 4)
-├── data/cache/              # CSVs descargados (gitignored)
-└── tests/
+│   ├── main.py              # entry point: arranca uvicorn
+│   ├── live/
+│   │   ├── server.py        # FastAPI + lifespan que arranca el runner
+│   │   ├── runner.py        # loop DCA
+│   │   ├── broker.py        # Binance wrapper (paper + live)
+│   │   └── store.py         # SQLite
+│   ├── data/download.py     # descarga OHLCV histórico (para backtest)
+│   ├── indicators.py
+│   ├── strategy/            # estrategias probadas en backtest
+│   └── backtest/            # motor + métricas + runners
+└── tests/                   # 11 tests, paper + idempotencia + indicadores
 ```
 
 ## Avisos
 
-- Trading automatizado puede llevar a pérdida total del capital.
-- No es asesoramiento financiero.
-- Empieza siempre con paper trading. Mete capital real solo después de meses de paper rentable.
+- Trading automatizado puede llevar a pérdida de capital.
+- **No es asesoramiento financiero.** Pruébalo en paper antes de meter dinero real.
+- DCA pasivo no garantiza rentabilidad — solo es una estrategia de gestión de riesgo emocional / de timing.

@@ -1,6 +1,17 @@
 # =============================================================================
 #  Bot Binance 12 — Configuración global
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# CONFIG DEL BOT LIVE (DCA constante en Railway)
+# -----------------------------------------------------------------------------
+live:
+  symbol: "ETH/EUR"            # par a comprar
+  weekly_eur: 25.0             # cuánto compra cada semana (en EUR)
+  buy_weekday: 0               # 0=lunes UTC, 1=martes UTC, ... 6=domingo UTC
+  check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
+  max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
+
 #  Edita este archivo para cambiar parámetros de estrategia y backtest.
 #  Cada estrategia tiene su propio bloque. La estrategia activa se selecciona
 #  en `active_strategy`.
