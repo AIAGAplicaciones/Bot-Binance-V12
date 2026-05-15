@@ -1,0 +1,86 @@
+# =============================================================================
+#  Bot Binance 12 — Configuración global
+# =============================================================================
+#  Edita este archivo para cambiar parámetros de estrategia y backtest.
+#  Cada estrategia tiene su propio bloque. La estrategia activa se selecciona
+#  en `active_strategy`.
+# =============================================================================
+
+# Estrategia que usa el live runner (cuando exista). Para backtest se pueden
+# correr todas comparativamente con el CLI.
+active_strategy: "breakout_1h"   # opciones: breakout_1h | donchian_daily | dca_rsi
+
+# Activos a operar y moneda quote.
+markets:
+  quote_asset: "EUR"             # MiCA-compliant: EUR / USDC / FDUSD (no USDT)
+  symbols:
+    - "ETH/EUR"
+    - "BTC/EUR"
+
+# Capital y riesgo global.
+capital:
+  total_allocated: 400.0
+  max_open_positions: 2
+  cash_reserve_pct: 5.0
+
+risk:
+  risk_per_trade_pct: 1.0        # % del capital arriesgado por trade (A y B)
+  max_daily_loss_pct: 3.0
+  max_consecutive_losses: 4
+
+# Costes reales de Binance Spot — usados en backtest.
+costs:
+  taker_fee_pct: 0.10
+  maker_fee_pct: 0.10
+  slippage_pct: 0.05             # estimación conservadora de slippage retail
+
+# -----------------------------------------------------------------------------
+# Estrategias
+# -----------------------------------------------------------------------------
+strategies:
+
+  breakout_1h:
+    timeframe: "1h"
+    regime_filter:
+      ema_period: 200
+    entry:
+      lookback_high: 20          # rotura del máximo de N velas
+      atr_period: 14
+      atr_min_ratio: 0.7         # ATR actual / ATR media debe ser >= esto
+      atr_avg_period: 50
+      volume_multiplier: 1.3
+      volume_ma_period: 20
+    exit:
+      atr_stop_mult: 1.5
+      atr_target_mult: 3.0
+      trailing_atr_mult: 1.5
+      time_stop_hours: 48
+
+  donchian_daily:
+    timeframe: "1d"
+    regime_filter:
+      ema_fast: 50
+      ema_slow: 200
+    entry:
+      donchian_high_period: 20
+    exit:
+      donchian_low_period: 10
+    risk_per_trade_pct: 1.5      # override del global
+
+  dca_rsi:
+    timeframe: "1d"
+    weekly_buy_eur: 25.0         # compra fija semanal por símbolo
+    weekly_buy_day: "monday"
+    rsi_period: 14
+    rsi_dip_threshold: 30        # RSI < esto → compra extra
+    rsi_dip_multiplier: 2.0
+    rsi_peak_threshold: 75       # RSI > esto → venta parcial
+    rsi_peak_sell_pct: 25.0      # % de la posición a vender en pico
+
+# -----------------------------------------------------------------------------
+# Backtest
+# -----------------------------------------------------------------------------
+backtest:
+  start_date: "2024-01-01"
+  end_date: "2026-05-01"
+  initial_capital: 400.0
