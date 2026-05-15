@@ -8,7 +8,7 @@
 live:
   symbol: "ETH/EUR"            # par a comprar
   amount_per_buy_eur: 10.0     # cuánto compra cada vez (debe superar minNotional Binance ~€5-10)
-  buy_every_n_days: 3          # frecuencia: 1=diario, 2=cada 2 días, 3=cada 3, 7=semanal
+  buy_every_n_days: 1          # SPRINT DE VALIDACIÓN: diario hasta ~22 may. Después revertir a 3.
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
 
