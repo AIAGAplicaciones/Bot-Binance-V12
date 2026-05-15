@@ -1,9 +1,8 @@
 """Tests del DcaRunner sin red: usa un broker mock."""
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -34,43 +33,95 @@ class MockBroker:
         )
 
 
+def _at(d: str):
+    """Datetime UTC al mediodía de la fecha YYYY-MM-DD."""
+    y, m, dd = map(int, d.split("-"))
+    return datetime(y, m, dd, 12, 0, tzinfo=timezone.utc)
+
+
 @pytest.mark.asyncio
-async def test_buys_only_on_buy_weekday(tmp_path):
+async def test_buys_first_time_then_respects_n_days(tmp_path):
     store = Store(tmp_path / "test.db")
     broker = MockBroker()
-    runner = DcaRunner(broker, store, DcaConfig(symbol="ETH/EUR", weekly_eur=25.0, buy_weekday=0))
+    runner = DcaRunner(broker, store, DcaConfig(amount_per_buy_eur=10.0, buy_every_n_days=3))
 
-    # Lunes (weekday=0)
-    monday = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
+    # Primera vez: compra
     with patch("src.live.runner.datetime") as mock_dt:
-        mock_dt.now.return_value = monday
-        await runner._tick()
-    assert broker.buys_called == 1
-    assert store.already_bought_on(monday.date(), "ETH/EUR")
-
-    # Tras buy: no recompra el mismo día
-    with patch("src.live.runner.datetime") as mock_dt:
-        mock_dt.now.return_value = monday
+        mock_dt.now.return_value = _at("2026-05-15")
         await runner._tick()
     assert broker.buys_called == 1
 
-    # Martes: skip
-    tuesday = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    # Mismo día: no recompra
     with patch("src.live.runner.datetime") as mock_dt:
-        mock_dt.now.return_value = tuesday
+        mock_dt.now.return_value = _at("2026-05-15")
         await runner._tick()
     assert broker.buys_called == 1
+
+    # +1 día: skip (< 3 días)
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-16")
+        await runner._tick()
+    assert broker.buys_called == 1
+
+    # +2 días: skip (todavía < 3)
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-17")
+        await runner._tick()
+    assert broker.buys_called == 1
+
+    # +3 días: compra
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-18")
+        await runner._tick()
+    assert broker.buys_called == 2
+
+    # +5 días desde la 2ª (i.e. ya pasaron > 3): compra
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-23")
+        await runner._tick()
+    assert broker.buys_called == 3
+
+
+@pytest.mark.asyncio
+async def test_daily_buys_with_n_equals_1(tmp_path):
+    store = Store(tmp_path / "test.db")
+    broker = MockBroker()
+    runner = DcaRunner(broker, store, DcaConfig(amount_per_buy_eur=10.0, buy_every_n_days=1))
+
+    for d in ["2026-05-15", "2026-05-16", "2026-05-17"]:
+        with patch("src.live.runner.datetime") as mock_dt:
+            mock_dt.now.return_value = _at(d)
+            await runner._tick()
+    assert broker.buys_called == 3
 
 
 @pytest.mark.asyncio
 async def test_respects_max_total_cap(tmp_path):
     store = Store(tmp_path / "test.db")
     broker = MockBroker()
-    runner = DcaRunner(broker, store, DcaConfig(weekly_eur=25.0, max_total_eur=10.0))  # cap muy bajo
+    runner = DcaRunner(broker, store, DcaConfig(amount_per_buy_eur=25.0, max_total_eur=10.0))
 
-    monday = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
     with patch("src.live.runner.datetime") as mock_dt:
-        mock_dt.now.return_value = monday
+        mock_dt.now.return_value = _at("2026-05-15")
         await runner._tick()
-    # 25€ > 10€ cap, no compra
     assert broker.buys_called == 0
+
+
+@pytest.mark.asyncio
+async def test_resumes_after_downtime_does_not_catch_up(tmp_path):
+    """Si el bot está parado N días, vuelve y compra UNA vez. No backfilea."""
+    store = Store(tmp_path / "test.db")
+    broker = MockBroker()
+    runner = DcaRunner(broker, store, DcaConfig(amount_per_buy_eur=10.0, buy_every_n_days=3))
+
+    # Compra inicial
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-01")
+        await runner._tick()
+    assert broker.buys_called == 1
+
+    # 30 días después (varios "ciclos" perdidos): compra solo UNA vez
+    with patch("src.live.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = _at("2026-05-31")
+        await runner._tick()
+    assert broker.buys_called == 2  # NO 10

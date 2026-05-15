@@ -35,8 +35,8 @@ def _load_config() -> tuple[DcaConfig, str]:
     live = raw.get("live", {}) or {}
     return DcaConfig(
         symbol=live.get("symbol", "ETH/EUR"),
-        weekly_eur=float(live.get("weekly_eur", 25.0)),
-        buy_weekday=int(live.get("buy_weekday", 0)),
+        amount_per_buy_eur=float(live.get("amount_per_buy_eur", 10.0)),
+        buy_every_n_days=int(live.get("buy_every_n_days", 3)),
         check_interval_minutes=int(live.get("check_interval_minutes", 30)),
         max_total_eur=float(live.get("max_total_eur", 10_000.0)),
     ), str(cfg_path)
@@ -123,8 +123,8 @@ def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
         "mode": broker.mode,
         "config": {
             "symbol": cfg.symbol,
-            "weekly_eur": cfg.weekly_eur,
-            "buy_weekday_utc": cfg.buy_weekday,
+            "amount_per_buy_eur": cfg.amount_per_buy_eur,
+            "buy_every_n_days": cfg.buy_every_n_days,
             "max_total_eur": cfg.max_total_eur,
         },
         "summary": summary,

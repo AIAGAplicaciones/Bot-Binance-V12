@@ -13,12 +13,22 @@ Bot de **DCA constante** para Binance Spot, desplegado en Railway.
 ## Cómo funciona
 
 - Cada `check_interval_minutes` (default 30 min) el bot mira la fecha UTC actual.
-- Si es el día de la semana configurado (`buy_weekday`, default lunes UTC) y aún no ha comprado hoy:
-  - Coge el precio actual.
-  - Lanza una market buy de `weekly_eur` (default €25) sobre `symbol` (default ETH/EUR).
+- Si han pasado al menos `buy_every_n_days` desde la última compra (default 3) y aún no ha comprado hoy:
+  - Coge el precio actual de Binance.
+  - Lanza una market buy de `amount_per_buy_eur` (default €10) sobre `symbol` (default ETH/EUR).
   - Persiste la operación en SQLite con clave única `(buy_date_utc, symbol)`.
 - Si reinicia, no compra dos veces el mismo día (idempotencia por fecha).
+- Si está parado varios días y vuelve, **no recupera compras perdidas** — compra una vez al volver y reanuda el ritmo. No acumula gasto inesperado.
 - Hard cap absoluto: `max_total_eur` (default €10 000). Si la suma histórica lo supera, deja de comprar y solo loggea.
+
+**Frecuencias típicas** (con `amount_per_buy_eur = €10`):
+
+| `buy_every_n_days` | Compras/mes | Gasto/mes |
+|---|---|---|
+| 1 (diario) | ~30 | ~€300 |
+| 2 | ~15 | ~€150 |
+| 3 (default) | ~10 | ~€100 |
+| 7 (semanal) | ~4 | ~€40 |
 
 **Modos**:
 - `FORCE_PAPER=true` (default): simula compras, no llama a Binance trading API.
@@ -70,12 +80,12 @@ Edita `config.yaml` antes de pushear (no env var):
 ```yaml
 live:
   symbol: "ETH/EUR"
-  weekly_eur: 25.0
-  buy_weekday: 0
+  amount_per_buy_eur: 10.0
+  buy_every_n_days: 3
   max_total_eur: 10000.0
 ```
 
-`max_total_eur` es la red de seguridad final: si por bug el bot intentara comprar más de eso en total histórico, se para. Pónselo a algo realista para tu horizonte (e.g., €25/sem × 52 sem × 5 años = €6 500).
+`max_total_eur` es la red de seguridad final: si por bug el bot intentara comprar más de eso en total histórico, se para. Pónselo a algo realista para tu horizonte (e.g., €100/mes × 60 meses = €6 000).
 
 ### 5. Permisos de la API key de Binance
 

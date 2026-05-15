@@ -7,10 +7,13 @@
 # -----------------------------------------------------------------------------
 live:
   symbol: "ETH/EUR"            # par a comprar
-  weekly_eur: 25.0             # cuánto compra cada semana (en EUR)
-  buy_weekday: 0               # 0=lunes UTC, 1=martes UTC, ... 6=domingo UTC
+  amount_per_buy_eur: 10.0     # cuánto compra cada vez (debe superar minNotional Binance ~€5-10)
+  buy_every_n_days: 3          # frecuencia: 1=diario, 2=cada 2 días, 3=cada 3, 7=semanal
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
+
+# Equivalencia mensual aproximada con la config actual:
+# €10 cada 3 días = ~€100/mes en ETH/EUR (10 compras/mes).
 
 #  Edita este archivo para cambiar parámetros de estrategia y backtest.
 #  Cada estrategia tiene su propio bloque. La estrategia activa se selecciona

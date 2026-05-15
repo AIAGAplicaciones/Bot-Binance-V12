@@ -81,6 +81,18 @@ class Store:
             )
             return cur.fetchone() is not None
 
+    def last_buy_date(self, symbol: str) -> Optional[date]:
+        """Última fecha en que se compró el símbolo. None si nunca."""
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT MAX(buy_date_utc) AS d FROM buys WHERE symbol = ?",
+                (symbol,),
+            )
+            row = cur.fetchone()
+            if not row or not row["d"]:
+                return None
+            return date.fromisoformat(row["d"])
+
     def record_buy(
         self,
         buy_date: date,
