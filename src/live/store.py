@@ -26,12 +26,29 @@ CREATE TABLE IF NOT EXISTS buys (
     base_qty REAL NOT NULL,
     fee_quote REAL NOT NULL DEFAULT 0.0,
     mode TEXT NOT NULL,                   -- 'paper' o 'live'
-    order_id TEXT,                        -- id devuelto por Binance (NULL en paper)
-    raw_response TEXT                     -- JSON de la respuesta (NULL en paper)
+    order_id TEXT,
+    raw_response TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_buys_date_symbol
     ON buys (buy_date_utc, symbol);
+
+CREATE TABLE IF NOT EXISTS sells (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    executed_at_utc TEXT NOT NULL,
+    sell_date_utc TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    base_qty REAL NOT NULL,
+    fill_price REAL NOT NULL,
+    quote_proceeds_eur REAL NOT NULL,     -- antes de fees
+    fee_quote REAL NOT NULL DEFAULT 0.0,
+    avg_cost_at_sale REAL NOT NULL,       -- coste medio en el momento de la venta
+    realized_pnl_eur REAL NOT NULL,       -- proceeds - fee - (qty * avg_cost)
+    reason TEXT NOT NULL,                 -- 'take_profit' u otra
+    mode TEXT NOT NULL,
+    order_id TEXT,
+    raw_response TEXT
+);
 
 CREATE TABLE IF NOT EXISTS bot_state (
     key TEXT PRIMARY KEY,
@@ -51,6 +68,24 @@ class Buy:
     fill_price: float
     base_qty: float
     fee_quote: float
+    mode: str
+    order_id: Optional[str]
+    raw_response: Optional[str]
+
+
+@dataclass
+class Sell:
+    id: int
+    executed_at_utc: datetime
+    sell_date_utc: date
+    symbol: str
+    base_qty: float
+    fill_price: float
+    quote_proceeds_eur: float
+    fee_quote: float
+    avg_cost_at_sale: float
+    realized_pnl_eur: float
+    reason: str
     mode: str
     order_id: Optional[str]
     raw_response: Optional[str]
@@ -125,6 +160,70 @@ class Store:
                 ),
             )
 
+    def record_sell(
+        self,
+        sell_date: date,
+        symbol: str,
+        base_qty: float,
+        fill_price: float,
+        quote_proceeds_eur: float,
+        fee_quote: float,
+        avg_cost_at_sale: float,
+        realized_pnl_eur: float,
+        reason: str,
+        mode: str,
+        order_id: Optional[str],
+        raw_response: Optional[str],
+    ) -> None:
+        with self._conn() as c:
+            c.execute(
+                """INSERT INTO sells
+                (executed_at_utc, sell_date_utc, symbol, base_qty, fill_price,
+                 quote_proceeds_eur, fee_quote, avg_cost_at_sale, realized_pnl_eur,
+                 reason, mode, order_id, raw_response)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    sell_date.isoformat(),
+                    symbol,
+                    base_qty,
+                    fill_price,
+                    quote_proceeds_eur,
+                    fee_quote,
+                    avg_cost_at_sale,
+                    realized_pnl_eur,
+                    reason,
+                    mode,
+                    order_id,
+                    raw_response,
+                ),
+            )
+
+    def last_sell_date(self, symbol: str) -> Optional[date]:
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT MAX(sell_date_utc) AS d FROM sells WHERE symbol = ?",
+                (symbol,),
+            )
+            row = cur.fetchone()
+            if not row or not row["d"]:
+                return None
+            return date.fromisoformat(row["d"])
+
+    def list_sells(self, symbol: Optional[str] = None, limit: int = 100) -> list[Sell]:
+        with self._conn() as c:
+            if symbol:
+                cur = c.execute(
+                    "SELECT * FROM sells WHERE symbol = ? ORDER BY executed_at_utc DESC LIMIT ?",
+                    (symbol, limit),
+                )
+            else:
+                cur = c.execute(
+                    "SELECT * FROM sells ORDER BY executed_at_utc DESC LIMIT ?",
+                    (limit,),
+                )
+            return [self._row_to_sell(r) for r in cur.fetchall()]
+
     def list_buys(self, symbol: Optional[str] = None, limit: int = 100) -> list[Buy]:
         with self._conn() as c:
             if symbol:
@@ -140,12 +239,17 @@ class Store:
             return [self._row_to_buy(r) for r in cur.fetchall()]
 
     def summary(self, symbol: str) -> dict:
+        """Resumen agregado: buys + sells.
+
+        - avg_cost: coste medio sobre los buys (NO se reduce con sells).
+        - net_qty: qty bruta de buys menos qty bruta de sells.
+        - realized_pnl: suma de realized_pnl_eur de los sells."""
         with self._conn() as c:
             cur = c.execute(
                 """SELECT
                     COUNT(*) AS n,
                     COALESCE(SUM(quote_amount_eur), 0) AS invested,
-                    COALESCE(SUM(base_qty), 0) AS qty,
+                    COALESCE(SUM(base_qty), 0) AS bought_qty,
                     COALESCE(SUM(fee_quote), 0) AS fees,
                     MIN(executed_at_utc) AS first_buy,
                     MAX(executed_at_utc) AS last_buy
@@ -153,9 +257,39 @@ class Store:
                 (symbol,),
             )
             row = cur.fetchone()
-        out = dict(row)
-        out["avg_cost"] = out["invested"] / out["qty"] if out["qty"] > 0 else None
-        return out
+            buy_summary = dict(row)
+
+            cur = c.execute(
+                """SELECT
+                    COUNT(*) AS n_sells,
+                    COALESCE(SUM(base_qty), 0) AS sold_qty,
+                    COALESCE(SUM(quote_proceeds_eur), 0) AS sold_proceeds,
+                    COALESCE(SUM(fee_quote), 0) AS sell_fees,
+                    COALESCE(SUM(realized_pnl_eur), 0) AS realized_pnl
+                FROM sells WHERE symbol = ?""",
+                (symbol,),
+            )
+            sell_row = dict(cur.fetchone())
+
+        avg_cost = buy_summary["invested"] / buy_summary["bought_qty"] if buy_summary["bought_qty"] > 0 else None
+        net_qty = buy_summary["bought_qty"] - sell_row["sold_qty"]
+
+        return {
+            "n": buy_summary["n"],
+            "n_sells": sell_row["n_sells"],
+            "invested": buy_summary["invested"],
+            "bought_qty": buy_summary["bought_qty"],
+            "sold_qty": sell_row["sold_qty"],
+            "net_qty": net_qty,
+            "fees": buy_summary["fees"] + sell_row["sell_fees"],
+            "first_buy": buy_summary["first_buy"],
+            "last_buy": buy_summary["last_buy"],
+            "avg_cost": avg_cost,
+            "realized_pnl": sell_row["realized_pnl"],
+            "sold_proceeds": sell_row["sold_proceeds"],
+            # Compat con código antiguo que usaba "qty"
+            "qty": net_qty,
+        }
 
     def get_state(self, key: str) -> Optional[str]:
         with self._conn() as c:
@@ -170,6 +304,25 @@ class Store:
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_utc = excluded.updated_at_utc""",
                 (key, value, datetime.now(timezone.utc).isoformat()),
             )
+
+    @staticmethod
+    def _row_to_sell(row: sqlite3.Row) -> Sell:
+        return Sell(
+            id=row["id"],
+            executed_at_utc=datetime.fromisoformat(row["executed_at_utc"]),
+            sell_date_utc=date.fromisoformat(row["sell_date_utc"]),
+            symbol=row["symbol"],
+            base_qty=row["base_qty"],
+            fill_price=row["fill_price"],
+            quote_proceeds_eur=row["quote_proceeds_eur"],
+            fee_quote=row["fee_quote"],
+            avg_cost_at_sale=row["avg_cost_at_sale"],
+            realized_pnl_eur=row["realized_pnl_eur"],
+            reason=row["reason"],
+            mode=row["mode"],
+            order_id=row["order_id"],
+            raw_response=row["raw_response"],
+        )
 
     @staticmethod
     def _row_to_buy(row: sqlite3.Row) -> Buy:

@@ -39,6 +39,9 @@ def _load_config() -> tuple[DcaConfig, str]:
         buy_every_n_days=int(live.get("buy_every_n_days", 3)),
         check_interval_minutes=int(live.get("check_interval_minutes", 30)),
         max_total_eur=float(live.get("max_total_eur", 10_000.0)),
+        take_profit_pct=float(live.get("take_profit_pct", 0.0)),
+        sell_pct_of_position=float(live.get("sell_pct_of_position", 25.0)),
+        min_days_between_sells=int(live.get("min_days_between_sells", 30)),
     ), str(cfg_path)
 
 
@@ -101,23 +104,29 @@ def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
 
     summary = store.summary(cfg.symbol)
     last_buys = [
-        {
-            "date": b.buy_date_utc.isoformat(),
-            "qty": b.base_qty,
-            "price": b.fill_price,
-            "amount_eur": b.quote_amount_eur,
-            "mode": b.mode,
-        }
+        {"date": b.buy_date_utc.isoformat(), "qty": b.base_qty, "price": b.fill_price,
+         "amount_eur": b.quote_amount_eur, "mode": b.mode}
         for b in store.list_buys(cfg.symbol, limit=10)
+    ]
+    last_sells = [
+        {"date": s.sell_date_utc.isoformat(), "qty": s.base_qty, "price": s.fill_price,
+         "proceeds_eur": s.quote_proceeds_eur, "realized_pnl_eur": s.realized_pnl_eur,
+         "reason": s.reason, "mode": s.mode}
+        for s in store.list_sells(cfg.symbol, limit=10)
     ]
     try:
         current_price = broker.get_price()
-    except Exception as e:  # red caída u otra
+    except Exception as e:
         current_price = None
         log.exception("No se pudo obtener precio actual: %s", e)
 
-    position_value = summary["qty"] * current_price if current_price else None
-    pnl = (position_value - summary["invested"]) if position_value is not None else None
+    net_qty = summary["net_qty"]
+    position_value = net_qty * current_price if current_price else None
+    # unrealized P&L sobre la posición VIVA, valorada a coste medio.
+    if position_value is not None and summary["avg_cost"] is not None:
+        unrealized = (current_price - summary["avg_cost"]) * net_qty
+    else:
+        unrealized = None
 
     return {
         "mode": broker.mode,
@@ -126,10 +135,16 @@ def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
             "amount_per_buy_eur": cfg.amount_per_buy_eur,
             "buy_every_n_days": cfg.buy_every_n_days,
             "max_total_eur": cfg.max_total_eur,
+            "take_profit_pct": cfg.take_profit_pct,
+            "sell_pct_of_position": cfg.sell_pct_of_position,
+            "min_days_between_sells": cfg.min_days_between_sells,
         },
         "summary": summary,
         "current_price": current_price,
         "position_value_eur": position_value,
-        "unrealized_pnl_eur": pnl,
+        "unrealized_pnl_eur": unrealized,
+        "realized_pnl_eur": summary["realized_pnl"],
+        "total_pnl_eur": (unrealized + summary["realized_pnl"]) if unrealized is not None else None,
         "last_buys": last_buys,
+        "last_sells": last_sells,
     }

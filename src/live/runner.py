@@ -1,16 +1,23 @@
-"""Loop de DCA constante: chequea cada cierto tiempo si toca comprar.
+"""Loop de DCA + take profit opcional.
 
-Comportamiento:
-- Cada `check_interval_minutes`, mira la fecha UTC actual.
-- Si ya se compró hoy → skip (idempotencia diaria).
-- Si la última compra fue hace menos de `buy_every_n_days` → skip.
-- Si no, compra `amount_per_buy_eur` (paper o live según broker).
-- Persiste en SQLite. Restart-safe.
-- Cap absoluto: si la suma histórica + esta compra > `max_total_eur` → skip.
+Comportamiento por tick (cada `check_interval_minutes`):
 
-Reentrada tras downtime: si el bot está parado N días y vuelve, NO intenta
-recuperar las compras perdidas. Compra una vez al volver y reanuda el ritmo
-desde esa nueva fecha. Esto es lo más seguro (no acumula).
+1. **Buy gate**: si ya se compró hoy o llevamos < `buy_every_n_days` desde la
+   última compra → skip buy.
+2. **Cap absoluto**: si `invested + amount_per_buy > max_total_eur` → skip buy.
+3. **Buy**: market buy `amount_per_buy_eur` (paper o live según broker).
+4. **Take profit** (si configurado): si el precio actual está ≥ `take_profit_pct`
+   por encima del coste medio Y han pasado ≥ `min_days_between_sells` desde la
+   última venta → vender `sell_pct_of_position` % de la posición.
+
+Restart-safe: usa SQLite para idempotencia diaria y para cooldowns. Si el bot
+se reinicia, no compra ni vende dos veces el mismo día.
+
+Nota matemática: el coste medio se calcula sobre las compras brutas
+(invested / bought_qty) y NO se reduce con las ventas. Esto significa que tras
+una venta parcial, las siguientes compras pueden subir el coste medio si se
+hacen a precio mayor, lo que hace progresivamente más difícil disparar
+take profit. Es un freno natural al "over-selling".
 """
 from __future__ import annotations
 
@@ -28,10 +35,15 @@ log = logging.getLogger(__name__)
 @dataclass
 class DcaConfig:
     symbol: str = "ETH/EUR"
-    amount_per_buy_eur: float = 10.0      # cuánto compra cada vez
-    buy_every_n_days: int = 3             # frecuencia (1=diario, 7=semanal)
+    amount_per_buy_eur: float = 10.0
+    buy_every_n_days: int = 3
     check_interval_minutes: int = 30
-    max_total_eur: float = 10_000.0       # cap histórico absoluto
+    max_total_eur: float = 10_000.0
+    # Take profit. Para deshabilitar pon take_profit_pct = 0.
+    take_profit_pct: float = 0.0          # % sobre coste medio para disparar
+    sell_pct_of_position: float = 25.0    # % de la posición a vender en TP
+    min_days_between_sells: int = 30      # cooldown
+    min_qty_to_sell: float = 1e-5         # evita ventas absurdamente pequeñas
 
 
 class DcaRunner:
@@ -42,10 +54,13 @@ class DcaRunner:
         self._stop = asyncio.Event()
 
     async def start(self) -> None:
+        tp_state = (f"TP ON @ {self.config.take_profit_pct:.1f}%, vende "
+                    f"{self.config.sell_pct_of_position:.0f}%" if self.config.take_profit_pct > 0
+                    else "TP OFF (solo acumular)")
         log.info(
-            "DcaRunner arrancado | mode=%s symbol=%s amount=€%.2f every=%d días",
+            "DcaRunner arrancado | mode=%s symbol=%s amount=€%.2f every=%d días | %s",
             self.broker.mode, self.config.symbol,
-            self.config.amount_per_buy_eur, self.config.buy_every_n_days,
+            self.config.amount_per_buy_eur, self.config.buy_every_n_days, tp_state,
         )
         try:
             while not self._stop.is_set():
@@ -67,43 +82,82 @@ class DcaRunner:
         now = datetime.now(timezone.utc)
         today = now.date()
 
-        # 1) Ya compré hoy?
-        if self.store.already_bought_on(today, self.config.symbol):
-            log.debug("Ya comprado hoy %s para %s. Skip.", today.isoformat(), self.config.symbol)
+        # ============ BUY ============
+        bought_this_tick = False
+        if not self.store.already_bought_on(today, self.config.symbol):
+            last_buy = self.store.last_buy_date(self.config.symbol)
+            ok = True
+            if last_buy is not None:
+                days_since = (today - last_buy).days
+                if days_since < self.config.buy_every_n_days:
+                    log.debug("Última compra hace %d días (< %d). Skip buy.",
+                              days_since, self.config.buy_every_n_days)
+                    ok = False
+
+            if ok:
+                summary = self.store.summary(self.config.symbol)
+                if summary["invested"] + self.config.amount_per_buy_eur > self.config.max_total_eur:
+                    log.warning("Cap alcanzado: €%.2f + €%.2f > €%.2f. No compro.",
+                                summary["invested"], self.config.amount_per_buy_eur, self.config.max_total_eur)
+                else:
+                    log.info("Toca comprar (%s, última %s). Ejecutando.",
+                             today.isoformat(), last_buy.isoformat() if last_buy else "nunca")
+                    r = self.broker.market_buy_quote(self.config.amount_per_buy_eur)
+                    self.store.record_buy(
+                        buy_date=today, symbol=self.config.symbol,
+                        quote_amount_eur=self.config.amount_per_buy_eur,
+                        fill_price=r.fill_price, base_qty=r.base_qty,
+                        fee_quote=r.fee_quote, mode=self.broker.mode,
+                        order_id=r.order_id, raw_response=r.raw_response,
+                    )
+                    bought_this_tick = True
+                    log.info("Compra registrada: qty %.6f @ %.4f, fee €%.4f",
+                             r.base_qty, r.fill_price, r.fee_quote)
+
+        # ============ TAKE PROFIT ============
+        if self.config.take_profit_pct > 0:
+            await self._maybe_take_profit(today)
+
+    async def _maybe_take_profit(self, today) -> None:
+        summary = self.store.summary(self.config.symbol)
+        net_qty = summary["net_qty"]
+        avg_cost = summary["avg_cost"]
+        if net_qty <= self.config.min_qty_to_sell or avg_cost is None:
             return
 
-        # 2) Han pasado N días desde la última compra?
-        last = self.store.last_buy_date(self.config.symbol)
-        if last is not None:
-            days_since = (today - last).days
-            if days_since < self.config.buy_every_n_days:
-                log.debug("Última compra fue hace %d días (< %d). Skip.",
-                          days_since, self.config.buy_every_n_days)
+        last_sell = self.store.last_sell_date(self.config.symbol)
+        if last_sell is not None:
+            days_since = (today - last_sell).days
+            if days_since < self.config.min_days_between_sells:
+                log.debug("Última venta hace %d días (< %d). Skip TP check.",
+                          days_since, self.config.min_days_between_sells)
                 return
 
-        # 3) Cap absoluto.
-        summary = self.store.summary(self.config.symbol)
-        if summary["invested"] + self.config.amount_per_buy_eur > self.config.max_total_eur:
-            log.warning(
-                "Cap alcanzado: invertido €%.2f + €%.2f > max €%.2f. No compro.",
-                summary["invested"], self.config.amount_per_buy_eur, self.config.max_total_eur,
-            )
+        current_price = self.broker.get_price()
+        gain_pct = (current_price / avg_cost - 1) * 100
+        if gain_pct < self.config.take_profit_pct:
+            log.debug("Gain %.2f%% < %.2f%%. No TP.", gain_pct, self.config.take_profit_pct)
             return
 
-        # 4) Comprar.
-        log.info("Toca comprar (%s, última fue %s). Ejecutando.",
-                 today.isoformat(), last.isoformat() if last else "nunca")
-        result = self.broker.market_buy_quote(self.config.amount_per_buy_eur)
-        self.store.record_buy(
-            buy_date=today,
-            symbol=self.config.symbol,
-            quote_amount_eur=self.config.amount_per_buy_eur,
-            fill_price=result.fill_price,
-            base_qty=result.base_qty,
-            fee_quote=result.fee_quote,
-            mode=self.broker.mode,
-            order_id=result.order_id,
-            raw_response=result.raw_response,
+        sell_qty = net_qty * self.config.sell_pct_of_position / 100
+        if sell_qty < self.config.min_qty_to_sell:
+            log.debug("Sell qty %.8f por debajo del mínimo. Skip.", sell_qty)
+            return
+
+        log.info(
+            "TAKE PROFIT: precio %.4f vs coste medio %.4f (gain %.2f%% >= %.2f%%). "
+            "Vendiendo %.6f de %.6f (%.0f%%).",
+            current_price, avg_cost, gain_pct, self.config.take_profit_pct,
+            sell_qty, net_qty, self.config.sell_pct_of_position,
         )
-        log.info("Compra registrada: qty %.6f @ %.4f, fee €%.4f",
-                 result.base_qty, result.fill_price, result.fee_quote)
+        r = self.broker.market_sell_base(sell_qty)
+        realized = r.quote_proceeds - r.fee_quote - r.base_qty * avg_cost
+        self.store.record_sell(
+            sell_date=today, symbol=self.config.symbol,
+            base_qty=r.base_qty, fill_price=r.fill_price,
+            quote_proceeds_eur=r.quote_proceeds, fee_quote=r.fee_quote,
+            avg_cost_at_sale=avg_cost, realized_pnl_eur=realized,
+            reason="take_profit", mode=self.broker.mode,
+            order_id=r.order_id, raw_response=r.raw_response,
+        )
+        log.info("Venta registrada: realized P&L €%+.2f", realized)

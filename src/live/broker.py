@@ -25,6 +25,16 @@ class BuyResult:
     raw_response: Optional[str]
 
 
+@dataclass
+class SellResult:
+    fill_price: float
+    base_qty: float                # qty vendida realmente
+    quote_proceeds: float          # eur recibidos brutos
+    fee_quote: float
+    order_id: Optional[str]
+    raw_response: Optional[str]
+
+
 class Broker:
     """Interfaz común. La instancia concreta decide paper vs live."""
     mode: str
@@ -32,6 +42,7 @@ class Broker:
 
     def get_price(self) -> float: ...
     def market_buy_quote(self, quote_amount_eur: float) -> BuyResult: ...
+    def market_sell_base(self, base_qty: float) -> SellResult: ...
 
 
 class PaperBroker(Broker):
@@ -48,15 +59,24 @@ class PaperBroker(Broker):
 
     def market_buy_quote(self, quote_amount_eur: float) -> BuyResult:
         price = self.get_price()
-        # Asume slippage de 0.05% en compras (peor que mid).
         fill = price * 1.0005
-        fee = quote_amount_eur * 0.001  # 0.1% taker
+        fee = quote_amount_eur * 0.001
         qty = (quote_amount_eur - fee) / fill
         log.info("PAPER market_buy_quote: %s €%.2f → fill %.4f, qty %.6f, fee %.4f",
                  self.symbol, quote_amount_eur, fill, qty, fee)
-        return BuyResult(
+        return BuyResult(fill_price=fill, base_qty=qty, fee_quote=fee, order_id=None, raw_response=None)
+
+    def market_sell_base(self, base_qty: float) -> SellResult:
+        price = self.get_price()
+        fill = price * 0.9995  # slippage en sells: vendes algo más barato
+        proceeds = base_qty * fill
+        fee = proceeds * 0.001
+        log.info("PAPER market_sell_base: %s qty %.6f → fill %.4f, proceeds €%.2f, fee %.4f",
+                 self.symbol, base_qty, fill, proceeds, fee)
+        return SellResult(
             fill_price=fill,
-            base_qty=qty,
+            base_qty=base_qty,
+            quote_proceeds=proceeds,
             fee_quote=fee,
             order_id=None,
             raw_response=None,
@@ -119,6 +139,34 @@ class LiveBroker(Broker):
         return BuyResult(
             fill_price=fill_price,
             base_qty=filled,
+            fee_quote=fee_quote,
+            order_id=str(order.get("id") or ""),
+            raw_response=json.dumps(order, default=str),
+        )
+
+    def market_sell_base(self, base_qty: float) -> SellResult:
+        order = self._exchange.create_order(
+            symbol=self.symbol,
+            type="market",
+            side="sell",
+            amount=base_qty,
+        )
+        filled = float(order.get("filled") or base_qty)
+        cost = float(order.get("cost") or 0)
+        fee_quote = 0.0
+        fees = order.get("fees") or ([order["fee"]] if order.get("fee") else [])
+        for f in fees:
+            if not f:
+                continue
+            if f.get("currency") == self._exchange.market(self.symbol)["quote"]:
+                fee_quote += float(f.get("cost") or 0)
+        fill_price = cost / filled if filled > 0 else self.get_price()
+        log.info("LIVE market_sell_base: %s qty %.6f → fill %.4f, proceeds €%.2f, fee €%.4f (order %s)",
+                 self.symbol, filled, fill_price, cost, fee_quote, order.get("id"))
+        return SellResult(
+            fill_price=fill_price,
+            base_qty=filled,
+            quote_proceeds=cost,
             fee_quote=fee_quote,
             order_id=str(order.get("id") or ""),
             raw_response=json.dumps(order, default=str),

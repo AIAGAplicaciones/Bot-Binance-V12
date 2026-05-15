@@ -12,6 +12,13 @@ live:
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
 
+  # Take profit (opcional). Pon take_profit_pct: 0 para desactivar.
+  # AVISO: el backtest indica que las reglas de venta automática suelen
+  # restar valor vs. solo acumular. Activado por preferencia del usuario.
+  take_profit_pct: 30.0        # vende si el precio sube X% sobre tu coste medio
+  sell_pct_of_position: 25.0   # qué % de la posición vender cuando se dispara
+  min_days_between_sells: 30   # cooldown mínimo entre ventas (días)
+
 # Equivalencia mensual aproximada con la config actual:
 # €10 cada 3 días = ~€100/mes en ETH/EUR (10 compras/mes).
 
