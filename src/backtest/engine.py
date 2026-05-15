@@ -29,6 +29,19 @@ class Costs:
 
 
 @dataclass
+class CashSchedule:
+    """Inyección periódica de cash al portafolio (simula aportaciones recurrentes)."""
+    weekly_amount: float = 0.0       # 0 = sin aportaciones recurrentes
+    weekday: int = 0                 # 0=lunes, 6=domingo
+
+
+@dataclass
+class CashInjection:
+    when: pd.Timestamp
+    amount: float
+
+
+@dataclass
 class Order:
     """Una orden que la estrategia quiere ejecutar al próximo open."""
     side: str                                  # "buy" | "sell"
@@ -84,6 +97,12 @@ class BacktestResult:
     initial_cash: float
     final_cash: float
     final_equity: float
+    total_injected: float = 0.0
+    injections: list[CashInjection] = None  # type: ignore
+
+    def __post_init__(self):
+        if self.injections is None:
+            self.injections = []
 
 
 def _buy_slip(price: float, slip_pct: float) -> float:
@@ -99,6 +118,7 @@ def run_backtest(
     strategy: StrategyFn,
     initial_cash: float,
     costs: Costs,
+    cash_schedule: Optional[CashSchedule] = None,
 ) -> BacktestResult:
     required = {"open", "high", "low", "close", "volume", "datetime"}
     missing = required - set(df.columns)
@@ -123,6 +143,11 @@ def run_backtest(
     pending: list[Order] = []
     trades: list[Trade] = []
     equity_values = np.empty(n, dtype=np.float64)
+    total_injected = initial_cash
+    injections: list[CashInjection] = []
+    last_injection_date = None
+    weekdays = pd.DatetimeIndex(times).weekday.to_numpy() if cash_schedule and cash_schedule.weekly_amount > 0 else None
+    dates_arr = pd.DatetimeIndex(times).date if cash_schedule and cash_schedule.weekly_amount > 0 else None
 
     def close_position(pos: Position, exit_price: float, exit_fee: float, exit_time, exit_idx: int, reason: str) -> None:
         notional_in = pos.qty * pos.entry_price
@@ -152,6 +177,15 @@ def run_backtest(
         low_i = lows[i]
         close_i = closes[i]
         time_i = times[i]
+
+        # 0) Inyección de cash si toca este día.
+        if weekdays is not None:
+            today = dates_arr[i]
+            if weekdays[i] == cash_schedule.weekday and today != last_injection_date:
+                cash += cash_schedule.weekly_amount
+                total_injected += cash_schedule.weekly_amount
+                injections.append(CashInjection(when=pd.Timestamp(time_i), amount=cash_schedule.weekly_amount))
+                last_injection_date = today
 
         # 1) Ejecutar órdenes pendientes al OPEN de esta vela.
         if pending:
@@ -261,4 +295,6 @@ def run_backtest(
         initial_cash=initial_cash,
         final_cash=cash,
         final_equity=cash,
+        total_injected=total_injected,
+        injections=injections,
     )

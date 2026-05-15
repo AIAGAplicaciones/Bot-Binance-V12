@@ -1,19 +1,24 @@
-"""Estrategia C — DCA + RSI dip/peak (referencia / baseline).
+"""DCA + señales RSI sobre el mismo cash schedule que la baseline.
 
-NO es trading direccional: es acumulación inteligente. Se incluye como línea
-base honesta — si A o B no la baten, no merece la pena la complejidad de live.
+Diferencias respecto a DCA constante:
+- Compra semanal SOLO si RSI <= rsi_skip_threshold (no compra cuando ETH está
+  caliente, lo que deja cash acumulándose como buffer).
+- Día con RSI < rsi_dip: deploy del 100 % del cash (incluido el buffer
+  acumulado por skips). Máx una vez por semana.
+- Día con RSI > rsi_peak: vende rsi_peak_sell_pct % de la posición. El cash
+  vuelve al pool y se redeploya en el próximo lunes/dip.
 
-Reglas:
-- Compra fija de X € cada lunes (vela diaria del lunes).
-- Compra extra (×2) cualquier día que RSI(14) diario < 30.
-- Venta parcial (25 % de la posición) cualquier día que RSI(14) > 75.
-- Nunca cierra todo. La métrica es el equity final vs. buy & hold puro.
+Es "DCA con disciplina": compras los lunes baratos, te saltas los lunes caros,
+y tomas profit parcial en máximos. Si esto no bate al DCA constante, las
+señales RSI no añaden valor real.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from ..backtest.engine import Order, Position
@@ -22,67 +27,51 @@ from ..indicators import rsi
 
 @dataclass
 class DcaRsiParams:
-    weekly_buy_eur: float = 25.0
-    weekly_buy_weekday: int = 0   # 0 = lunes
+    buy_weekday: int = 0
     rsi_period: int = 14
-    rsi_dip_threshold: float = 30.0
-    rsi_dip_multiplier: float = 2.0
-    rsi_peak_threshold: float = 75.0
-    rsi_peak_sell_pct: float = 25.0   # % de la posición que vendemos en pico
-
-
-def prepare(df: pd.DataFrame, p: DcaRsiParams) -> pd.DataFrame:
-    df = df.copy()
-    df["rsi"] = rsi(df["close"], p.rsi_period)
-    df["weekday"] = df["datetime"].dt.weekday
-    return df
+    rsi_skip_threshold: float = 70.0   # no compra el lunes si RSI > esto
+    rsi_dip: float = 30.0              # RSI < esto -> dip buy (100 % cash)
+    rsi_peak: float = 75.0             # RSI > esto -> peak sell parcial
+    rsi_peak_sell_pct: float = 25.0
+    min_action_gap_days: int = 7       # no más de un dip o peak por semana
+    min_buy_eur: float = 5.0
 
 
 def make_strategy(p: DcaRsiParams):
-    prepared: dict = {"df_id": None, "df": None}
-    state = {"last_weekly_buy_date": None}
+    cache: dict = {"df_id": None, "weekdays": None, "dates": None, "rsi": None}
+    state: dict = {"last_buy_date": None, "last_dip_date": None, "last_peak_date": None}
 
     def strategy(df: pd.DataFrame, i: int, position: Optional[Position], cash: float) -> list[Order]:
-        if prepared["df_id"] != id(df):
-            prepared["df"] = prepare(df, p)
-            prepared["df_id"] = id(df)
-            state["last_weekly_buy_date"] = None
-        d = prepared["df"]
+        if cache["df_id"] != id(df):
+            idx = pd.DatetimeIndex(df["datetime"])
+            cache["weekdays"] = idx.weekday.to_numpy()
+            cache["dates"] = idx.date
+            cache["rsi"] = rsi(df["close"], p.rsi_period).to_numpy()
+            cache["df_id"] = id(df)
+            state["last_buy_date"] = None
+            state["last_dip_date"] = None
+            state["last_peak_date"] = None
 
-        row = d.iloc[i]
+        today = cache["dates"][i]
+        rsi_i = cache["rsi"][i]
+        if np.isnan(rsi_i):
+            return []
+
         orders: list[Order] = []
-        today = row["datetime"].date()
 
-        # 1) Compra semanal fija el día indicado.
-        if (
-            int(row["weekday"]) == p.weekly_buy_weekday
-            and state["last_weekly_buy_date"] != today
-            and cash >= p.weekly_buy_eur * 1.01  # cubre fees
-        ):
-            orders.append(Order(
-                side="buy",
-                fraction_of_cash=min(p.weekly_buy_eur / cash, 1.0),
-                tag="dca_weekly",
-            ))
-            state["last_weekly_buy_date"] = today
-
-        # 2) Compra extra en RSI dip.
-        if pd.notna(row["rsi"]) and row["rsi"] < p.rsi_dip_threshold:
-            extra = p.weekly_buy_eur * p.rsi_dip_multiplier
-            if cash >= extra * 1.01 and state.get("last_dip_date") != today:
-                orders.append(Order(
-                    side="buy",
-                    fraction_of_cash=min(extra / cash, 1.0),
-                    tag="dca_dip",
-                ))
+        # 1) Dip buy: RSI muy bajo, deployea TODO el cash (incluido buffer).
+        if rsi_i < p.rsi_dip and cash >= p.min_buy_eur:
+            if state["last_dip_date"] is None or (today - state["last_dip_date"]).days >= p.min_action_gap_days:
+                orders.append(Order(side="buy", fraction_of_cash=1.0, tag="dca_dip"))
                 state["last_dip_date"] = today
+                state["last_buy_date"] = today
+                return orders  # no más acciones hoy
 
-        # 3) Venta parcial en RSI peak (sólo si hay posición).
+        # 2) Peak sell: RSI alto, venta parcial.
         if (
             position is not None
-            and pd.notna(row["rsi"])
-            and row["rsi"] > p.rsi_peak_threshold
-            and state.get("last_peak_date") != today
+            and rsi_i > p.rsi_peak
+            and (state["last_peak_date"] is None or (today - state["last_peak_date"]).days >= p.min_action_gap_days)
         ):
             orders.append(Order(
                 side="sell",
@@ -90,6 +79,16 @@ def make_strategy(p: DcaRsiParams):
                 tag="dca_peak",
             ))
             state["last_peak_date"] = today
+
+        # 3) Compra semanal el día indicado, SOLO si RSI no está muy alto.
+        if (
+            cache["weekdays"][i] == p.buy_weekday
+            and today != state["last_buy_date"]
+            and rsi_i <= p.rsi_skip_threshold
+            and cash >= p.min_buy_eur
+        ):
+            orders.append(Order(side="buy", fraction_of_cash=1.0, tag="dca_weekly"))
+            state["last_buy_date"] = today
 
         return orders
 
