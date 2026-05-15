@@ -43,7 +43,7 @@ def make_strategy(p: DcaRsiParams):
     state = {"last_weekly_buy_date": None}
 
     def strategy(df: pd.DataFrame, i: int, position: Optional[Position], cash: float) -> list[Order]:
-        if prepared["df_id"] is not id(df):
+        if prepared["df_id"] != id(df):
             prepared["df"] = prepare(df, p)
             prepared["df_id"] = id(df)
             state["last_weekly_buy_date"] = None

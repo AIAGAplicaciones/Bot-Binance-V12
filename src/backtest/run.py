@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..data.download import load
-from ..strategy import breakout_1h, donchian_daily, dca_rsi
+from ..strategy import breakout_1h, donchian_daily, dca_rsi, mean_reversion_5m
 from .engine import Costs, run_backtest
 from .metrics import buy_and_hold_return, compute_metrics
 
@@ -48,6 +48,12 @@ def main() -> None:
 
     runs = []
 
+    if args.timeframe == "5m":
+        runs.append(run_one(
+            "S1 - Mean reversion 5m",
+            df, mean_reversion_5m.make_strategy(mean_reversion_5m.MeanReversion5mParams()),
+            args.initial, costs, args.timeframe,
+        ))
     if args.timeframe == "1h":
         runs.append(run_one(
             "A - Breakout 1h",

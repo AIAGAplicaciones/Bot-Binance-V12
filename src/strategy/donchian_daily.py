@@ -41,7 +41,7 @@ def make_strategy(p: DonchianParams):
     prepared: dict = {"df_id": None, "df": None}
 
     def strategy(df: pd.DataFrame, i: int, position: Optional[Position], cash: float) -> list[Order]:
-        if prepared["df_id"] is not id(df):
+        if prepared["df_id"] != id(df):
             prepared["df"] = prepare(df, p)
             prepared["df_id"] = id(df)
         d = prepared["df"]
