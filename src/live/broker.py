@@ -43,6 +43,7 @@ class Broker:
     def get_price(self) -> float: ...
     def market_buy_quote(self, quote_amount_eur: float) -> BuyResult: ...
     def market_sell_base(self, base_qty: float) -> SellResult: ...
+    def fetch_closes(self, timeframe: str, limit: int) -> list[float]: ...
 
 
 class PaperBroker(Broker):
@@ -56,6 +57,10 @@ class PaperBroker(Broker):
     def get_price(self) -> float:
         ticker = self._exchange.fetch_ticker(self.symbol)
         return float(ticker["last"])
+
+    def fetch_closes(self, timeframe: str, limit: int) -> list[float]:
+        ohlcv = self._exchange.fetch_ohlcv(self.symbol, timeframe, limit=limit)
+        return [float(c[4]) for c in ohlcv]  # índice 4 = close
 
     def market_buy_quote(self, quote_amount_eur: float) -> BuyResult:
         price = self.get_price()
@@ -100,6 +105,10 @@ class LiveBroker(Broker):
 
     def get_price(self) -> float:
         return float(self._exchange.fetch_ticker(self.symbol)["last"])
+
+    def fetch_closes(self, timeframe: str, limit: int) -> list[float]:
+        ohlcv = self._exchange.fetch_ohlcv(self.symbol, timeframe, limit=limit)
+        return [float(c[4]) for c in ohlcv]  # índice 4 = close
 
     def market_buy_quote(self, quote_amount_eur: float) -> BuyResult:
         market = self._exchange.market(self.symbol)

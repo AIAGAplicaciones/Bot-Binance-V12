@@ -6,9 +6,16 @@
 # CONFIG DEL BOT LIVE (DCA constante en Railway)
 # -----------------------------------------------------------------------------
 live:
+  # Qué runner arranca el bot:
+  #   "dca"   -> acumulador DCA constante (comportamiento por defecto, abajo).
+  #   "trend" -> seguidor de tendencia diversificado (bloque trend_runner).
+  # AVISO: el modo trend está validado en backtest pero NO bate de forma fiable
+  # fuera de muestra. Úsalo en paper (FORCE_PAPER=true) antes que nada.
+  active_runner: "dca"
+
   symbol: "ETH/EUR"            # par a comprar
   amount_per_buy_eur: 10.0     # cuánto compra cada vez (debe superar minNotional Binance ~€5-10)
-  buy_every_n_days: 1          # SPRINT DE VALIDACIÓN: diario hasta ~22 may. Después revertir a 3.
+  buy_every_n_days: 3          # Sprint de validación diario (hasta ~22 may 2025) finalizado; revertido a 3 según plan.
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
 
@@ -18,6 +25,19 @@ live:
   take_profit_pct: 30.0        # vende si el precio sube X% sobre tu coste medio
   sell_pct_of_position: 25.0   # qué % de la posición vender cuando se dispara
   min_days_between_sells: 30   # cooldown mínimo entre ventas (días)
+
+  # -------------------------------------------------------------------------
+  # MODO TREND (solo activo si active_runner: "trend")
+  # Seguidor de tendencia: largo cuando el cierre diario > SMA(sma_period),
+  # fuera (efectivo) cuando está por debajo. Capital repartido por símbolo.
+  # Backtest 2,5 años: +40-56% vs +3.6% buy&hold, con la mitad de drawdown.
+  # -------------------------------------------------------------------------
+  trend_runner:
+    symbols: ["ETH/EUR", "BTC/EUR"]   # cesta diversificada
+    sma_period: 50                    # 40-50 fue lo más robusto en backtest
+    allocation_eur_per_symbol: 200.0  # cuánto comprar por símbolo al entrar
+    timeframe: "1d"                   # decide sobre velas diarias cerradas
+    check_interval_minutes: 60        # cada cuánto reconcilia estado vs objetivo
 
 # Equivalencia mensual aproximada con la config actual:
 # €10 cada 3 días = ~€100/mes en ETH/EUR (10 compras/mes).

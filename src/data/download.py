@@ -93,8 +93,8 @@ def main() -> None:
     df = fetch_ohlcv(args.symbol, args.timeframe, args.months)
     path = save(df, args.symbol, args.timeframe)
     console.print(
-        f"[green]✓[/green] Guardadas {len(df):,} velas en [bold]{path}[/bold] "
-        f"(rango: {df['datetime'].min()} → {df['datetime'].max()})"
+        f"[green][OK][/green] Guardadas {len(df):,} velas en [bold]{path}[/bold] "
+        f"(rango: {df['datetime'].min()} -> {df['datetime'].max()})"
     )
 
 
