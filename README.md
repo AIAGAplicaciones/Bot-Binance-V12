@@ -34,6 +34,23 @@ Bot de **DCA constante** para Binance Spot, desplegado en Railway.
 - `FORCE_PAPER=true` (default): simula compras, no llama a Binance trading API.
 - `FORCE_PAPER=false` + keys API válidas: ejecuta market buys reales.
 
+### Runner alternativo: seguidor de tendencia (`active_runner: "trend"`)
+
+Además del DCA, el bot incluye un **runner de tendencia diversificado** (en
+`config.yaml` → `live.active_runner: "trend"`). En vez de comprar siempre,
+mantiene posición en una cesta (ETH+BTC) solo cuando el precio está por encima
+de su SMA(50) diaria, y se sale a efectivo cuando cae por debajo:
+
+- Largo cuando `cierre_diario > SMA(sma_period)`; fuera (efectivo) si está debajo.
+- Capital repartido por símbolo (`allocation_eur_per_symbol`).
+- **Basado en estado objetivo**: cada tick reconcilia "¿debería estar dentro?"
+  con el `net_qty` real del store → idempotente y restart-safe.
+
+Backtest sobre 2,5 años: **+40-56% vs +3,6% del buy & hold, con la mitad de
+drawdown**. ⚠️ Pero NO bate de forma fiable fuera de muestra en periodos cortos
+(ver `stability_check.py`): es una forma de *tener* cripto con menos riesgo, NO
+una máquina de ingresos diarios. **Úsalo en `FORCE_PAPER=true` primero.**
+
 ## Setup local
 
 ```bash
@@ -142,7 +159,7 @@ Bot binance 12/
 │   ├── indicators.py
 │   ├── strategy/            # estrategias probadas en backtest
 │   └── backtest/            # motor + métricas + runners
-└── tests/                   # 11 tests, paper + idempotencia + indicadores
+└── tests/                   # 25 tests, paper + idempotencia + trend + indicadores
 ```
 
 ## Avisos
