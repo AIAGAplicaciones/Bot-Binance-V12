@@ -9,10 +9,12 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Annotated
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from .broker import make_broker
@@ -170,8 +172,8 @@ def _symbol_status(store: Store, broker, symbol: str) -> dict:
     }
 
 
-@app.get("/status")
-def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
+def _status_payload() -> dict:
+    """Construye el dict de estado (lo usan /status en JSON y /dashboard en HTML)."""
     store: Store = app.state.store
 
     # ----- modo TREND: estado por símbolo -----
@@ -248,3 +250,158 @@ def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
         "last_buys": last_buys,
         "last_sells": last_sells,
     }
+
+
+@app.get("/status")
+def status_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> dict:
+    return _status_payload()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard web (HTML, sin build step) — estado del bot de forma visual.
+# Sirve en /dashboard con la misma auth básica. No toca el healthcheck público.
+# ---------------------------------------------------------------------------
+_DASHBOARD_CSS = """
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         background:#0d1117; color:#e6edf3; padding:24px; }
+  .wrap { max-width:980px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:18px; }
+  .badges { margin-bottom:18px; }
+  .badge { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px;
+           font-weight:600; margin-right:8px; }
+  .hero { background:#161b22; border:1px solid #30363d; border-radius:14px;
+          padding:22px; margin-bottom:18px; text-align:center; }
+  .hero .label { color:#8b949e; font-size:13px; }
+  .hero .big { font-size:40px; font-weight:700; margin-top:4px; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:14px;
+          padding:18px 20px; margin-bottom:18px; }
+  .card-h { display:flex; justify-content:space-between; align-items:baseline; }
+  .card-h h2 { margin:0; font-size:17px; }
+  .price { font-size:18px; font-weight:600; color:#58a6ff; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+          gap:10px; margin:16px 0; }
+  .kv { background:#0d1117; border:1px solid #21262d; border-radius:10px; padding:10px 12px; }
+  .kv span { display:block; color:#8b949e; font-size:11px; margin-bottom:3px; }
+  .kv b { font-size:15px; }
+  h3 { font-size:13px; color:#8b949e; margin:16px 0 6px; text-transform:uppercase; letter-spacing:.4px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #21262d; }
+  th { color:#8b949e; font-weight:500; }
+  .pos { color:#3fb950; } .neg { color:#f85149; } .muted { color:#8b949e; }
+  .foot { color:#8b949e; font-size:12px; text-align:center; margin-top:8px; }
+</style>
+"""
+
+
+def _eur(x) -> str:
+    return f"€{x:,.2f}" if isinstance(x, (int, float)) else "—"
+
+
+def _pnl_span(x) -> str:
+    if not isinstance(x, (int, float)):
+        return '<span class="muted">—</span>'
+    cls = "pos" if x >= 0 else "neg"
+    sign = "+" if x >= 0 else ""
+    return f'<span class="{cls}">{sign}{x:,.2f} €</span>'
+
+
+def _render_symbol_block(s: dict) -> str:
+    summary = s.get("summary", {}) or {}
+    sym = s.get("symbol", "?")
+    net_qty = summary.get("net_qty", 0) or 0
+    avg_cost = summary.get("avg_cost")
+    buys = (s.get("last_buys") or [])[:8]
+    sells = (s.get("last_sells") or [])[:5]
+
+    buy_rows = "".join(
+        f"<tr><td>{b.get('date','')}</td><td>{_eur(b.get('price'))}</td>"
+        f"<td>{(b.get('qty') or 0):.6f}</td><td>{_eur(b.get('amount_eur'))}</td></tr>"
+        for b in buys
+    ) or '<tr><td colspan="4" class="muted">Sin compras todavía</td></tr>'
+    sell_rows = "".join(
+        f"<tr><td>{x.get('date','')}</td><td>{_eur(x.get('price'))}</td>"
+        f"<td>{(x.get('qty') or 0):.6f}</td><td>{_pnl_span(x.get('realized_pnl_eur'))}</td></tr>"
+        for x in sells
+    ) or '<tr><td colspan="4" class="muted">Sin ventas (el bot solo ha comprado)</td></tr>'
+
+    return f"""
+    <div class="card">
+      <div class="card-h"><h2>{sym}</h2><span class="price">{_eur(s.get('current_price'))}</span></div>
+      <div class="grid">
+        <div class="kv"><span>Invertido</span><b>{_eur(summary.get('invested'))}</b></div>
+        <div class="kv"><span>Valor posición</span><b>{_eur(s.get('position_value_eur'))}</b></div>
+        <div class="kv"><span>Unidades</span><b>{net_qty:.6f}</b></div>
+        <div class="kv"><span>Coste medio</span><b>{_eur(avg_cost) if avg_cost else '—'}</b></div>
+        <div class="kv"><span>Ganancia latente</span><b>{_pnl_span(s.get('unrealized_pnl_eur'))}</b></div>
+        <div class="kv"><span>Ganancia realizada</span><b>{_pnl_span(s.get('realized_pnl_eur'))}</b></div>
+        <div class="kv"><span>Compras</span><b>{summary.get('n', 0)}</b></div>
+        <div class="kv"><span>Ventas</span><b>{summary.get('n_sells', 0)}</b></div>
+      </div>
+      <h3>Últimas compras</h3>
+      <table><thead><tr><th>Fecha</th><th>Precio</th><th>Unidades</th><th>€</th></tr></thead>
+      <tbody>{buy_rows}</tbody></table>
+      <h3>Últimas ventas</h3>
+      <table><thead><tr><th>Fecha</th><th>Precio</th><th>Unidades</th><th>Resultado</th></tr></thead>
+      <tbody>{sell_rows}</tbody></table>
+    </div>"""
+
+
+def _render_dashboard(data: dict) -> str:
+    mode = data.get("mode", "?")
+    runner = data.get("runner", "dca")
+    is_live = "live" in mode
+    mode_color = "#f85149" if is_live else "#3fb950"
+    mode_text = "LIVE · DINERO REAL" if is_live else "PAPER · simulado"
+    cfg = data.get("config", {}) or {}
+
+    if runner == "trend":
+        cfg_line = (f"Modo TREND · SMA-{cfg.get('sma_period')} · "
+                    f"€{cfg.get('allocation_eur_per_symbol')}/símbolo · {cfg.get('timeframe')}")
+        blocks = "".join(_render_symbol_block(s) for s in (data.get("symbols") or {}).values())
+    else:
+        cfg_line = (f"Modo DCA · €{cfg.get('amount_per_buy_eur')} cada "
+                    f"{cfg.get('buy_every_n_days')} días · TP {cfg.get('take_profit_pct')}%")
+        blocks = _render_symbol_block({
+            "symbol": cfg.get("symbol"),
+            "summary": data.get("summary", {}),
+            "current_price": data.get("current_price"),
+            "position_value_eur": data.get("position_value_eur"),
+            "unrealized_pnl_eur": data.get("unrealized_pnl_eur"),
+            "realized_pnl_eur": data.get("realized_pnl_eur"),
+            "last_buys": data.get("last_buys", []),
+            "last_sells": data.get("last_sells", []),
+        })
+
+    total = data.get("total_pnl_eur")
+    hero_val = _pnl_span(total) if isinstance(total, (int, float)) else '<span class="muted">—</span>'
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    head = ('<!doctype html><html lang="es"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<meta http-equiv="refresh" content="60">'
+            '<title>Bot Binance 12 — Dashboard</title>' + _DASHBOARD_CSS + '</head><body>')
+    body = f"""
+    <div class="wrap">
+      <h1>Bot Binance 12</h1>
+      <div class="sub">{cfg_line}</div>
+      <div class="badges">
+        <span class="badge" style="background:{mode_color};color:#0d1117;">{mode_text}</span>
+        <span class="badge" style="background:#21262d;color:#8b949e;">runner: {runner}</span>
+      </div>
+      <div class="hero">
+        <div class="label">Resultado total (realizado + latente)</div>
+        <div class="big">{hero_val}</div>
+      </div>
+      {blocks}
+      <div class="foot">Actualizado {now} · se refresca solo cada 60 s</div>
+    </div></body></html>"""
+    return head + body
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_endpoint(_user: Annotated[str, Depends(_check_auth)]) -> HTMLResponse:
+    return HTMLResponse(_render_dashboard(_status_payload()))
