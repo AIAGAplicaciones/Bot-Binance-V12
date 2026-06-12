@@ -14,7 +14,7 @@ from typing import Annotated
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from .broker import make_broker
@@ -128,6 +128,12 @@ app = FastAPI(title="Bot Binance 12 — DCA constante", lifespan=lifespan)
 
 
 @app.get("/")
+def root() -> RedirectResponse:
+    """La raíz lleva directa al dashboard. El healthcheck de Railway vive en /health."""
+    return RedirectResponse(url="/dashboard")
+
+
+@app.get("/health")
 def healthcheck() -> dict:
     return {"status": "ok"}
 
