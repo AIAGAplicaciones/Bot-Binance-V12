@@ -1,7 +1,17 @@
 """Tests del renderizador del dashboard (función pura, sin red)."""
 from __future__ import annotations
 
-from src.live.server import _render_dashboard, _eur, _pnl_span
+from src.live.server import _render_dashboard, _eur, _pnl_span, root, healthcheck
+
+
+def test_root_redirects_to_dashboard():
+    r = root()
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "/dashboard"
+
+
+def test_health_endpoint_ok():
+    assert healthcheck() == {"status": "ok"}
 
 
 def test_eur_formatting():
