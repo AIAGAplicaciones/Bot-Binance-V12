@@ -20,12 +20,12 @@ live:
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
 
   # Take profit (opcional). Pon take_profit_pct: 0 para desactivar.
-  # DESACTIVADO: el backtest indica que las reglas de venta automática restan
-  # valor vs. solo acumular. El bot es ahora un ACUMULADOR PURO (solo compra);
-  # las ventas las decide el usuario a mano.
-  take_profit_pct: 0.0         # 0 = sin ventas automáticas (acumulador puro)
-  sell_pct_of_position: 25.0   # (ignorado mientras take_profit_pct sea 0)
-  min_days_between_sells: 30   # (ignorado mientras take_profit_pct sea 0)
+  # ACTIVO por preferencia del usuario: el bot vende solo cuando sube.
+  # (Nota: el backtest sugiere que las reglas de venta restan valor vs. solo
+  #  acumular, pero es decisión del usuario tener ventas automáticas.)
+  take_profit_pct: 30.0        # vende cuando el precio sube X% sobre el coste medio
+  sell_pct_of_position: 25.0   # qué % de la posición vende cuando se dispara
+  min_days_between_sells: 30   # cooldown mínimo entre ventas (días)
 
   # -------------------------------------------------------------------------
   # MODO TREND (solo activo si active_runner: "trend")
