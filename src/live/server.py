@@ -37,11 +37,20 @@ def _read_live_block() -> tuple[dict, str]:
     return raw.get("live", {}) or {}, str(cfg_path)
 
 
-def _load_config() -> tuple[DcaConfig, str]:
-    """Lee la config del runner DCA de config.yaml."""
-    live, cfg_path = _read_live_block()
+def _dca_symbols() -> list[str]:
+    """Monedas que acumula el DCA. Acepta `symbols` (lista) o `symbol` (única)."""
+    live, _ = _read_live_block()
+    syms = live.get("symbols")
+    if syms:
+        return [str(s) for s in syms]
+    return [str(live.get("symbol", "ETH/EUR"))]
+
+
+def _load_config_for(symbol: str) -> DcaConfig:
+    """DcaConfig para un símbolo concreto (mismos parámetros para todos)."""
+    live, _ = _read_live_block()
     return DcaConfig(
-        symbol=live.get("symbol", "ETH/EUR"),
+        symbol=symbol,
         amount_per_buy_eur=float(live.get("amount_per_buy_eur", 10.0)),
         buy_every_n_days=int(live.get("buy_every_n_days", 3)),
         check_interval_minutes=int(live.get("check_interval_minutes", 30)),
@@ -49,7 +58,7 @@ def _load_config() -> tuple[DcaConfig, str]:
         take_profit_pct=float(live.get("take_profit_pct", 0.0)),
         sell_pct_of_position=float(live.get("sell_pct_of_position", 25.0)),
         min_days_between_sells=int(live.get("min_days_between_sells", 30)),
-    ), cfg_path
+    )
 
 
 def _load_trend_config() -> tuple[TrendConfig, str]:
@@ -96,32 +105,45 @@ async def lifespan(app: FastAPI):
     app.state.store = store
     app.state.runner_kind = kind
 
+    runners = []
     if kind == "trend":
         tcfg, cfg_path = _load_trend_config()
         log.info("Config cargada de %s | runner=trend | %s", cfg_path, tcfg)
         brokers = {sym: make_broker(sym) for sym in tcfg.symbols}
-        runner = TrendRunner(brokers=brokers, store=store, config=tcfg)
         app.state.trend_config = tcfg
         app.state.brokers = brokers
-        app.state.runner = runner
+        runners.append(TrendRunner(brokers=brokers, store=store, config=tcfg))
     else:
-        cfg, cfg_path = _load_config()
-        log.info("Config cargada de %s | runner=dca | %s", cfg_path, cfg)
-        broker = make_broker(cfg.symbol)
-        runner = DcaRunner(broker, store, cfg)
-        app.state.config = cfg
-        app.state.broker = broker
-        app.state.runner = runner
+        # DCA: un runner independiente por cada moneda, compartiendo el store.
+        symbols = _dca_symbols()
+        brokers, configs = {}, {}
+        for sym in symbols:
+            cfg = _load_config_for(sym)
+            brokers[sym] = make_broker(sym)
+            configs[sym] = cfg
+            runners.append(DcaRunner(brokers[sym], store, cfg))
+            log.info("Config cargada de %s | runner=dca | %s", cfg_path_safe(), cfg)
+        app.state.dca_symbols = symbols
+        app.state.dca_brokers = brokers
+        app.state.dca_configs = configs
 
-    task = asyncio.create_task(runner.start())
+    app.state.runners = runners
+    tasks = [asyncio.create_task(r.start()) for r in runners]
     try:
         yield
     finally:
-        runner.stop()
-        try:
-            await asyncio.wait_for(task, timeout=5)
-        except asyncio.TimeoutError:
-            task.cancel()
+        for r in runners:
+            r.stop()
+        for t in tasks:
+            try:
+                await asyncio.wait_for(t, timeout=5)
+            except asyncio.TimeoutError:
+                t.cancel()
+
+
+def cfg_path_safe() -> str:
+    _, p = _read_live_block()
+    return p
 
 
 app = FastAPI(title="Bot Binance 12 — DCA constante", lifespan=lifespan)
@@ -205,56 +227,31 @@ def _status_payload() -> dict:
             "symbols": per_symbol,
         }
 
-    # ----- modo DCA (por defecto) -----
-    cfg: DcaConfig = app.state.config
-    broker = app.state.broker
-
-    summary = store.summary(cfg.symbol)
-    last_buys = [
-        {"date": b.buy_date_utc.isoformat(), "qty": b.base_qty, "price": b.fill_price,
-         "amount_eur": b.quote_amount_eur, "mode": b.mode}
-        for b in store.list_buys(cfg.symbol, limit=10)
-    ]
-    last_sells = [
-        {"date": s.sell_date_utc.isoformat(), "qty": s.base_qty, "price": s.fill_price,
-         "proceeds_eur": s.quote_proceeds_eur, "realized_pnl_eur": s.realized_pnl_eur,
-         "reason": s.reason, "mode": s.mode}
-        for s in store.list_sells(cfg.symbol, limit=10)
-    ]
-    try:
-        current_price = broker.get_price()
-    except Exception as e:
-        current_price = None
-        log.exception("No se pudo obtener precio actual: %s", e)
-
-    net_qty = summary["net_qty"]
-    position_value = net_qty * current_price if current_price else None
-    # unrealized P&L sobre la posición VIVA, valorada a coste medio.
-    if position_value is not None and summary["avg_cost"] is not None:
-        unrealized = (current_price - summary["avg_cost"]) * net_qty
-    else:
-        unrealized = None
-
+    # ----- modo DCA (uno o varios símbolos) -----
+    symbols = app.state.dca_symbols
+    brokers = app.state.dca_brokers
+    configs = app.state.dca_configs
+    per_symbol = {sym: _symbol_status(store, brokers[sym], sym) for sym in symbols}
+    mode = ",".join(sorted({b.mode for b in brokers.values()}))
+    total_real = sum(s["realized_pnl_eur"] or 0 for s in per_symbol.values())
+    total_unreal = sum((s["unrealized_pnl_eur"] or 0) for s in per_symbol.values())
+    c0 = configs[symbols[0]]
     return {
-        "mode": broker.mode,
+        "mode": mode,
         "runner": "dca",
         "config": {
-            "symbol": cfg.symbol,
-            "amount_per_buy_eur": cfg.amount_per_buy_eur,
-            "buy_every_n_days": cfg.buy_every_n_days,
-            "max_total_eur": cfg.max_total_eur,
-            "take_profit_pct": cfg.take_profit_pct,
-            "sell_pct_of_position": cfg.sell_pct_of_position,
-            "min_days_between_sells": cfg.min_days_between_sells,
+            "symbols": symbols,
+            "amount_per_buy_eur": c0.amount_per_buy_eur,
+            "buy_every_n_days": c0.buy_every_n_days,
+            "max_total_eur": c0.max_total_eur,
+            "take_profit_pct": c0.take_profit_pct,
+            "sell_pct_of_position": c0.sell_pct_of_position,
+            "min_days_between_sells": c0.min_days_between_sells,
         },
-        "summary": summary,
-        "current_price": current_price,
-        "position_value_eur": position_value,
-        "unrealized_pnl_eur": unrealized,
-        "realized_pnl_eur": summary["realized_pnl"],
-        "total_pnl_eur": (unrealized + summary["realized_pnl"]) if unrealized is not None else None,
-        "last_buys": last_buys,
-        "last_sells": last_sells,
+        "realized_pnl_eur": total_real,
+        "unrealized_pnl_eur": total_unreal,
+        "total_pnl_eur": total_real + total_unreal,
+        "symbols": per_symbol,
     }
 
 
@@ -367,10 +364,15 @@ def _render_dashboard(data: dict) -> str:
     if runner == "trend":
         cfg_line = (f"Modo TREND · SMA-{cfg.get('sma_period')} · "
                     f"€{cfg.get('allocation_eur_per_symbol')}/símbolo · {cfg.get('timeframe')}")
-        blocks = "".join(_render_symbol_block(s) for s in (data.get("symbols") or {}).values())
     else:
+        syms = cfg.get("symbols") or [cfg.get("symbol")]
         cfg_line = (f"Modo DCA · €{cfg.get('amount_per_buy_eur')} cada "
-                    f"{cfg.get('buy_every_n_days')} días · TP {cfg.get('take_profit_pct')}%")
+                    f"{cfg.get('buy_every_n_days')} días · TP {cfg.get('take_profit_pct')}% · "
+                    f"{', '.join(str(s) for s in syms if s)}")
+
+    if data.get("symbols"):       # estado por símbolo (trend o DCA multi-moneda)
+        blocks = "".join(_render_symbol_block(s) for s in data["symbols"].values())
+    else:                          # DCA de un solo símbolo en formato plano (compat)
         blocks = _render_symbol_block({
             "symbol": cfg.get("symbol"),
             "summary": data.get("summary", {}),

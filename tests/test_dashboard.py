@@ -81,3 +81,29 @@ def test_render_live_mode_warning():
     data["mode"] = "live"
     html = _render_dashboard(data)
     assert "LIVE" in html and "DINERO REAL" in html
+
+
+def test_render_dca_multi_symbol():
+    """DCA con varias monedas: una tarjeta por moneda."""
+    data = {
+        "mode": "paper", "runner": "dca",
+        "config": {"symbols": ["ETH/EUR", "BTC/EUR"], "amount_per_buy_eur": 10.0,
+                   "buy_every_n_days": 3, "take_profit_pct": 30.0},
+        "total_pnl_eur": -5.0,
+        "symbols": {
+            "ETH/EUR": {"symbol": "ETH/EUR", "summary": {"n": 28, "n_sells": 0, "invested": 280.0,
+                        "net_qty": 0.166, "avg_cost": 1682.0, "realized_pnl": 0},
+                        "current_price": 1483.0, "position_value_eur": 246.0,
+                        "unrealized_pnl_eur": -34.0, "realized_pnl_eur": 0,
+                        "last_buys": [], "last_sells": []},
+            "BTC/EUR": {"symbol": "BTC/EUR", "summary": {"n": 0, "n_sells": 0, "invested": 0,
+                        "net_qty": 0, "avg_cost": None, "realized_pnl": 0},
+                        "current_price": 55000.0, "position_value_eur": 0,
+                        "unrealized_pnl_eur": None, "realized_pnl_eur": 0,
+                        "last_buys": [], "last_sells": []},
+        },
+    }
+    html = _render_dashboard(data)
+    assert "Modo DCA" in html
+    assert "ETH/EUR" in html and "BTC/EUR" in html   # dos tarjetas
+    assert "Sin compras" in html                      # BTC aún sin comprar

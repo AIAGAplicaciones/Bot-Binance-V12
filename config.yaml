@@ -13,8 +13,8 @@ live:
   # fuera de muestra. Úsalo en paper (FORCE_PAPER=true) antes que nada.
   active_runner: "dca"
 
-  symbol: "ETH/EUR"            # par a comprar
-  amount_per_buy_eur: 10.0     # cuánto compra cada vez (debe superar minNotional Binance ~€5-10)
+  symbols: ["ETH/EUR", "BTC/EUR"]   # monedas que acumula el DCA (una o varias)
+  amount_per_buy_eur: 10.0     # cuánto compra de CADA moneda cada vez (>= minNotional ~€5-10)
   buy_every_n_days: 3          # Sprint de validación diario (hasta ~22 may 2025) finalizado; revertido a 3 según plan.
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
