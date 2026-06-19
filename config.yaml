@@ -24,8 +24,10 @@ live:
   # (Nota: el backtest sugiere que las reglas de venta restan valor vs. solo
   #  acumular, pero es decisión del usuario tener ventas automáticas.)
   take_profit_pct: 30.0        # vende cuando el precio sube X% sobre el coste medio
-  sell_pct_of_position: 25.0   # qué % de la posición vende cuando se dispara
-  min_days_between_sells: 30   # cooldown mínimo entre ventas (días)
+  sell_pct_of_position: 100.0  # vende TODA la posición de golpe al alcanzar el objetivo
+  min_days_between_sells: 30   # tras vender todo, espera N días antes de volver a
+                               # tomar beneficios (evita revender cada compra nueva
+                               # del DCA mientras el precio sigue alto)
 
   # -------------------------------------------------------------------------
   # MODO TREND (solo activo si active_runner: "trend")
