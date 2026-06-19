@@ -25,9 +25,7 @@ live:
   #  acumular, pero es decisión del usuario tener ventas automáticas.)
   take_profit_pct: 30.0        # vende cuando el precio sube X% sobre el coste medio
   sell_pct_of_position: 100.0  # vende TODA la posición de golpe al alcanzar el objetivo
-  min_days_between_sells: 30   # tras vender todo, espera N días antes de volver a
-                               # tomar beneficios (evita revender cada compra nueva
-                               # del DCA mientras el precio sigue alto)
+  min_days_between_sells: 0    # sin espera entre ventas (por preferencia del usuario)
 
   # -------------------------------------------------------------------------
   # MODO TREND (solo activo si active_runner: "trend")
