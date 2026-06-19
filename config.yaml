@@ -23,7 +23,7 @@ live:
   # ACTIVO por preferencia del usuario: el bot vende solo cuando sube.
   # (Nota: el backtest sugiere que las reglas de venta restan valor vs. solo
   #  acumular, pero es decisión del usuario tener ventas automáticas.)
-  take_profit_pct: 30.0        # vende cuando el precio sube X% sobre el coste medio
+  take_profit_pct: 10.0        # vende cuando el precio sube +10% sobre el coste medio
   sell_pct_of_position: 100.0  # vende TODA la posición de golpe al alcanzar el objetivo
   min_days_between_sells: 0    # sin espera entre ventas (por preferencia del usuario)
 
