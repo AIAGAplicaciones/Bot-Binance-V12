@@ -97,13 +97,16 @@ class LiveBroker(Broker):
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-            # fetchCurrencies=False evita el endpoint de wallet (sapi capital/config),
-            # que pide permisos extra y falla con -2015 si la key está restringida
-            # por IP. Un bot de spot solo necesita los mercados públicos; la
-            # validación real de la key ocurre al lanzar la primera orden.
-            "options": {"defaultType": "spot", "fetchCurrencies": False},
+            "options": {"defaultType": "spot"},
         })
-        self._exchange.load_markets()
+        # Cargamos los metadatos de mercado desde un cliente PÚBLICO (sin claves).
+        # Si llamáramos a load_markets() en el cliente autenticado, ccxt-binance
+        # toca endpoints SAPI (currencies, margin/allPairs) que fallan con -2015
+        # cuando la key está restringida por IP o sin permisos de wallet/margin,
+        # tumbando el arranque. La key solo hace falta al lanzar órdenes (donde se
+        # valida de verdad); si es inválida, fallará el buy (capturado), no el boot.
+        _public = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "spot"}})
+        self._exchange.set_markets(_public.load_markets())
         if self.symbol not in self._exchange.markets:
             raise ValueError(f"Símbolo {self.symbol} no encontrado en Binance Spot.")
 
