@@ -97,7 +97,11 @@ class LiveBroker(Broker):
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+            # fetchCurrencies=False evita el endpoint de wallet (sapi capital/config),
+            # que pide permisos extra y falla con -2015 si la key está restringida
+            # por IP. Un bot de spot solo necesita los mercados públicos; la
+            # validación real de la key ocurre al lanzar la primera orden.
+            "options": {"defaultType": "spot", "fetchCurrencies": False},
         })
         self._exchange.load_markets()
         if self.symbol not in self._exchange.markets:

@@ -17,7 +17,7 @@ live:
   amount_per_buy_eur: 10.0     # cuánto compra de CADA moneda cada vez (>= minNotional ~€5-10)
   buy_every_n_days: 3          # Sprint de validación diario (hasta ~22 may 2025) finalizado; revertido a 3 según plan.
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
-  max_total_eur: 10000.0       # cap histórico absoluto - si lo supera, no compra más
+  max_total_eur: 100.0         # TOPE DE SEGURIDAD por moneda - máximo que invierte en cada una
 
   # Take profit (opcional). Pon take_profit_pct: 0 para desactivar.
   # ACTIVO por preferencia del usuario: el bot vende solo cuando sube.
