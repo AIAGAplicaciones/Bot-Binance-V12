@@ -13,8 +13,8 @@ live:
   # fuera de muestra. Úsalo en paper (FORCE_PAPER=true) antes que nada.
   active_runner: "dca"
 
-  symbols: ["ETH/EUR", "BTC/EUR"]   # monedas que acumula el DCA (una o varias)
-  amount_per_buy_eur: 10.0     # cuánto compra de CADA moneda cada vez (>= minNotional ~€5-10)
+  symbols: ["ETH/USDC", "BTC/USDC"]   # monedas que acumula el DCA (una o varias). Quote USDC: usa el saldo USDC del Spot.
+  amount_per_buy_eur: 10.0     # cuánto compra de CADA moneda cada vez, en la quote (aquí 10 USDC). (>= minNotional ~5-10)
   buy_every_n_days: 3          # Sprint de validación diario (hasta ~22 may 2025) finalizado; revertido a 3 según plan.
   check_interval_minutes: 30   # cada cuánto el runner mira si toca comprar
   max_total_eur: 100.0         # TOPE DE SEGURIDAD por moneda - máximo que invierte en cada una
