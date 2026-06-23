@@ -21,6 +21,7 @@ from .broker import make_broker
 from .runner import DcaConfig, DcaRunner
 from .store import Store
 from .trend_runner import TrendConfig, TrendRunner
+from .scalein_runner import ScaleinConfig, ScaleinRunner
 
 log = logging.getLogger(__name__)
 security = HTTPBasic()
@@ -75,6 +76,21 @@ def _load_trend_config() -> tuple[TrendConfig, str]:
     ), cfg_path
 
 
+def _load_scalein_config() -> tuple[ScaleinConfig, str]:
+    """Lee la config del runner scale-in de config.yaml."""
+    live, cfg_path = _read_live_block()
+    sc = live.get("scalein_runner", {}) or {}
+    symbols = tuple(sc.get("symbols", ["ETH/USDC", "BTC/USDC"]))
+    return ScaleinConfig(
+        symbols=symbols,
+        sma_period=int(sc.get("sma_period", 50)),
+        n_chunks=int(sc.get("n_chunks", 5)),
+        allocation_eur_per_symbol=float(sc.get("allocation_eur_per_symbol", 100.0)),
+        timeframe=str(sc.get("timeframe", "1d")),
+        check_interval_minutes=int(sc.get("check_interval_minutes", 20)),
+    ), cfg_path
+
+
 def _active_runner_kind() -> str:
     live, _ = _read_live_block()
     return str(live.get("active_runner", "dca")).lower()
@@ -113,6 +129,13 @@ async def lifespan(app: FastAPI):
         app.state.trend_config = tcfg
         app.state.brokers = brokers
         runners.append(TrendRunner(brokers=brokers, store=store, config=tcfg))
+    elif kind == "scalein":
+        sccfg, cfg_path = _load_scalein_config()
+        log.info("Config cargada de %s | runner=scalein | %s", cfg_path, sccfg)
+        brokers = {sym: make_broker(sym) for sym in sccfg.symbols}
+        app.state.scalein_config = sccfg
+        app.state.brokers = brokers
+        runners.append(ScaleinRunner(brokers=brokers, store=store, config=sccfg))
     else:
         # DCA: un runner independiente por cada moneda, compartiendo el store.
         symbols = _dca_symbols()
@@ -220,6 +243,30 @@ def _status_payload() -> dict:
                 "sma_period": tcfg.sma_period,
                 "allocation_eur_per_symbol": tcfg.allocation_eur_per_symbol,
                 "timeframe": tcfg.timeframe,
+            },
+            "realized_pnl_eur": total_real,
+            "unrealized_pnl_eur": total_unreal,
+            "total_pnl_eur": total_real + total_unreal,
+            "symbols": per_symbol,
+        }
+
+    # ----- modo SCALEIN: estado por símbolo -----
+    if getattr(app.state, "runner_kind", "dca") == "scalein":
+        sccfg: ScaleinConfig = app.state.scalein_config
+        brokers = app.state.brokers
+        per_symbol = {sym: _symbol_status(store, brokers[sym], sym) for sym in sccfg.symbols}
+        mode = ",".join(sorted({b.mode for b in brokers.values()}))
+        total_real = sum(s["realized_pnl_eur"] or 0 for s in per_symbol.values())
+        total_unreal = sum((s["unrealized_pnl_eur"] or 0) for s in per_symbol.values())
+        return {
+            "mode": mode,
+            "runner": "scalein",
+            "config": {
+                "symbols": list(sccfg.symbols),
+                "sma_period": sccfg.sma_period,
+                "n_chunks": sccfg.n_chunks,
+                "allocation_eur_per_symbol": sccfg.allocation_eur_per_symbol,
+                "timeframe": sccfg.timeframe,
             },
             "realized_pnl_eur": total_real,
             "unrealized_pnl_eur": total_unreal,
@@ -364,6 +411,10 @@ def _render_dashboard(data: dict) -> str:
     if runner == "trend":
         cfg_line = (f"Modo TREND · SMA-{cfg.get('sma_period')} · "
                     f"€{cfg.get('allocation_eur_per_symbol')}/símbolo · {cfg.get('timeframe')}")
+    elif runner == "scalein":
+        cfg_line = (f"Modo SCALE-IN · SMA-{cfg.get('sma_period')} · "
+                    f"{cfg.get('n_chunks')} trozos · €{cfg.get('allocation_eur_per_symbol')}/símbolo · "
+                    f"{cfg.get('timeframe')} · {', '.join(cfg.get('symbols', []))}")
     else:
         syms = cfg.get("symbols") or [cfg.get("symbol")]
         cfg_line = (f"Modo DCA · €{cfg.get('amount_per_buy_eur')} cada "
