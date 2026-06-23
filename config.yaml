@@ -50,7 +50,7 @@ live:
   # muestra -> SOLO PAPER (FORCE_PAPER=true) para forward-test honesto.
   # -------------------------------------------------------------------------
   scalein_runner:
-    symbols: ["ETH/USDC", "BTC/USDC"]
+    symbols: ["ETH/USDC", "LINK/USDC"]
     sma_period: 50                    # 50 fue el más robusto en backtest
     n_chunks: 5                       # en cuántos trozos diarios escala la entrada
     allocation_eur_per_symbol: 100.0  # objetivo total por símbolo (en la quote)
