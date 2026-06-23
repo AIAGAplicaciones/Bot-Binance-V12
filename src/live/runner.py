@@ -96,9 +96,15 @@ class DcaRunner:
 
             if ok:
                 summary = self.store.summary(self.config.symbol)
-                if summary["invested"] + self.config.amount_per_buy_eur > self.config.max_total_eur:
-                    log.warning("Cap alcanzado: €%.2f + €%.2f > €%.2f. No compro.",
-                                summary["invested"], self.config.amount_per_buy_eur, self.config.max_total_eur)
+                # Cap sobre la EXPOSICIÓN NETA actual (coste base de lo que tengo
+                # ahora), no sobre la suma bruta histórica de compras. Así, si el
+                # take profit vende la posición, la exposición baja y el bot puede
+                # volver a comprar. Con el cap sobre el bruto, el bot se paraba
+                # para siempre tras N compras aunque hubiera vendido todo.
+                net_invested = (summary["net_qty"] * summary["avg_cost"]) if summary["avg_cost"] else 0.0
+                if net_invested + self.config.amount_per_buy_eur > self.config.max_total_eur:
+                    log.warning("Cap alcanzado: exposición €%.2f + €%.2f > €%.2f. No compro.",
+                                net_invested, self.config.amount_per_buy_eur, self.config.max_total_eur)
                 else:
                     log.info("Toca comprar (%s, última %s). Ejecutando.",
                              today.isoformat(), last_buy.isoformat() if last_buy else "nunca")
