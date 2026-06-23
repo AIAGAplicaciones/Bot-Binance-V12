@@ -7,11 +7,12 @@
 # -----------------------------------------------------------------------------
 live:
   # Qué runner arranca el bot:
-  #   "dca"   -> acumulador DCA constante (comportamiento por defecto, abajo).
-  #   "trend" -> seguidor de tendencia diversificado (bloque trend_runner).
-  # AVISO: el modo trend está validado en backtest pero NO bate de forma fiable
-  # fuera de muestra. Úsalo en paper (FORCE_PAPER=true) antes que nada.
-  active_runner: "dca"
+  #   "dca"     -> acumulador DCA constante (comportamiento por defecto, abajo).
+  #   "trend"   -> seguidor de tendencia diversificado (bloque trend_runner).
+  #   "scalein" -> entrada escalonada en tendencia (bloque scalein_runner).
+  # AVISO: trend/scalein están validados solo en backtest y NO baten de forma
+  # fiable fuera de muestra. Úsalos en paper (FORCE_PAPER=true) antes que nada.
+  active_runner: "scalein"
 
   symbols: ["ETH/USDC", "BTC/USDC"]   # monedas que acumula el DCA (una o varias). Quote USDC: usa el saldo USDC del Spot.
   amount_per_buy_eur: 10.0     # cuánto compra de CADA moneda cada vez, en la quote (aquí 10 USDC). (>= minNotional ~5-10)
@@ -39,6 +40,22 @@ live:
     allocation_eur_per_symbol: 200.0  # cuánto comprar por símbolo al entrar
     timeframe: "1d"                   # decide sobre velas diarias cerradas
     check_interval_minutes: 60        # cada cuánto reconcilia estado vs objetivo
+
+  # -------------------------------------------------------------------------
+  # MODO SCALE-IN (solo activo si active_runner: "scalein")
+  # Entra a TROZOS en la subida (cierre diario > SMA y subiendo), un trozo por
+  # día hasta n_chunks; vende TODO cuando el cierre cae por debajo de la SMA.
+  # Backtest 4 años (fees+slippage reales): batió a buy&hold en ETH (+91% vs
+  # +34%) pero NO en BTC (perdió vs +199%). Reduce drawdown. NO probado fuera de
+  # muestra -> SOLO PAPER (FORCE_PAPER=true) para forward-test honesto.
+  # -------------------------------------------------------------------------
+  scalein_runner:
+    symbols: ["ETH/USDC", "BTC/USDC"]
+    sma_period: 50                    # 50 fue el más robusto en backtest
+    n_chunks: 5                       # en cuántos trozos diarios escala la entrada
+    allocation_eur_per_symbol: 100.0  # objetivo total por símbolo (en la quote)
+    timeframe: "1d"                   # decide sobre velas diarias cerradas
+    check_interval_minutes: 20        # revisión cada 20 min (la señal solo cambia 1×/día)
 
 # Equivalencia mensual aproximada con la config actual:
 # €10 cada 3 días = ~€100/mes en ETH/EUR (10 compras/mes).
