@@ -53,7 +53,7 @@ live:
     symbols: ["ETH/USDC", "LINK/USDC"]
     sma_period: 50                    # 50 fue el más robusto en backtest
     n_chunks: 5                       # en cuántos trozos diarios escala la entrada
-    allocation_eur_per_symbol: 100.0  # objetivo total por símbolo (en la quote)
+    allocation_eur_per_symbol: 200.0  # objetivo total por símbolo (5 trozos de ~40 en la quote)
     timeframe: "1d"                   # decide sobre velas diarias cerradas
     check_interval_minutes: 20        # revisión cada 20 min (la señal solo cambia 1×/día)
 
